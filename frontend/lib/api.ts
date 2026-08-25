@@ -133,11 +133,21 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
-    throw new ApiError(
-      0,
-      "network_error",
-      `Could not reach the API at ${API_BASE}. Is the backend running?`,
-    );
+    // Retry once after 2.5s in case Render backend is waking up from free tier sleep
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      response = await fetch(url.toString(), {
+        method,
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    } catch {
+      throw new ApiError(
+        0,
+        "network_error",
+        `Could not reach the API at ${API_BASE}. Is the backend running?`,
+      );
+    }
   }
 
   if (response.status === 401 && retryOnAuthFailure && !skipAuth) {
