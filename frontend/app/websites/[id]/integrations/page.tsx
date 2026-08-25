@@ -178,8 +178,13 @@ function GoogleCard({
   const [busy, setBusy] = useState(false);
   const [properties, setProperties] = useState<{ id: string; label: string }[]>([]);
   const [selected, setSelected] = useState("");
+  const [showServiceAccount, setShowServiceAccount] = useState(false);
+  const [serviceAccountKey, setServiceAccountKey] = useState("");
 
   const connected = integration?.status === "connected" || integration?.status === "syncing";
+  const usingServiceAccount = integration?.account_label?.endsWith(
+    ".iam.gserviceaccount.com",
+  );
 
   const loadProperties = useCallback(async () => {
     if (!connected) return;
@@ -323,11 +328,69 @@ function GoogleCard({
             </button>
           </>
         ) : (
-          <button type="button" disabled={busy} onClick={() => void connect()} className="btn-primary">
-            Connect with Google
-          </button>
+          <>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void connect()}
+              className="btn-primary"
+            >
+              Connect with Google
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowServiceAccount(!showServiceAccount)}
+              className="rounded-lg border border-slate-700 bg-slate-800/80 px-3.5 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700 hover:text-white transition shadow-sm"
+            >
+              🔑 {showServiceAccount ? "Hide Service Account Form" : "Use a service account instead"}
+            </button>
+          </>
         )}
       </div>
+
+      {connected && usingServiceAccount && (
+        <p className="mt-3 text-xs text-slate-500">
+          Authenticated with a service account - no token expiry, no periodic reconsent.
+        </p>
+      )}
+
+      {!connected && showServiceAccount && (
+        <div className="mt-4 border-t border-slate-800 pt-4">
+          <label className="label" htmlFor={`${provider}-sa`}>
+            Service-account JSON key
+          </label>
+          <textarea
+            id={`${provider}-sa`}
+            rows={4}
+            className="input font-mono text-xs"
+            placeholder='{"type": "service_account", "project_id": "...", ...}'
+            value={serviceAccountKey}
+            onChange={(event) => setServiceAccountKey(event.target.value)}
+          />
+          <p className="mt-1.5 text-xs text-slate-500">
+            Paste the whole key file from Google Cloud, then grant its{" "}
+            <code>client_email</code> access to the{" "}
+            {provider === "gsc" ? "Search Console property" : "GA4 property"}. No browser consent
+            and no 7-day token expiry - the right choice for scheduled syncs.
+          </p>
+          <button
+            type="button"
+            disabled={busy || serviceAccountKey.trim().length < 50}
+            onClick={() =>
+              void run("Connect", async () => {
+                await api.integrations.connectServiceAccount(websiteId, provider, {
+                  key: serviceAccountKey,
+                });
+                setServiceAccountKey("");
+                setShowServiceAccount(false);
+              })
+            }
+            className="btn-primary mt-2"
+          >
+            Connect with service account
+          </button>
+        </div>
+      )}
     </Card>
   );
 }
