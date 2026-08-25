@@ -6,6 +6,7 @@ services:
     dockerfilePath: ./backend/Dockerfile
     context: ./backend
     plan: starter
+    healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -39,21 +40,13 @@ services:
           name: seo-redis
           property: connectionString
 
-  # 3. Next.js Frontend
-  - type: web
-    name: seo-automation-frontend
-    env: node
-    buildCommand: cd frontend && npm install && npm run build
-    startCommand: cd frontend && npm run start
-    envVars:
-      - key: NEXT_PUBLIC_API_URL
-        fromService:
-          type: web
-          name: seo-automation-api
-          property: url
+  # 3. Managed Redis Instance
+  - type: redis
+    name: seo-redis
+    plan: starter
+    ipAllowList: []
 
 databases:
   - name: seo-postgres
     plan: starter
 
-# Managed Redis Instance
