@@ -232,8 +232,6 @@ export const api = {
       request<Website>(`/api/websites/${id}`, { method: "PATCH", body: payload }),
     remove: (id: number) =>
       request<{ message: string }>(`/api/websites/${id}`, { method: "DELETE" }),
-    seedDemo: (id: number) =>
-      request<Website>(`/api/websites/${id}/seed_demo`, { method: "POST" }),
   },
 
   crawls: {
