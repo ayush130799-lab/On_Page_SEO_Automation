@@ -1,0 +1,147 @@
+# Full stack: database, broker, API, four workers, the scheduler and the dashboard.
+#
+#   docker compose up -d              start everything
+#   docker compose up -d db redis     just the infrastructure, for local development
+#   docker compose logs -f worker-crawl
+#
+# Copy `.env.example` to `.env` first and set SECRET_KEY at minimum.
+
+x-backend: &backend
+  build:
+    context: ./backend
+  image: seo-automation-backend:latest
+  restart: unless-stopped
+  env_file:
+    # Optional so `docker compose config` works on a fresh clone; copy
+    # `.env.example` to `.env` before actually starting the stack.
+    - path: .env
+      required: false
+  environment:
+    # Inside the compose network these override whatever .env says about localhost.
+    DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-seo_automation}
+    REDIS_URL: redis://redis:6379/0
+    USE_CELERY: "true"
+    GROQ_MODEL: "openai/gpt-oss-20b"
+    AI_MAX_CONTENT_LENGTH: "2500"
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  db:
+    image: postgres:16
+    container_name: seo_automation_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-seo_automation}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - seo_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-seo_automation}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: seo_automation_redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - seo_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # Applies migrations once, then exits. Everything else waits for it to succeed, so no service
+  # ever starts against a schema that is behind the code.
+  migrate:
+    <<: *backend
+    container_name: seo_automation_migrate
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+
+  api:
+    <<: *backend
+    container_name: seo_automation_api
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    command:
+      ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+
+  # One worker per queue. A multi-hour crawl must not block a two-second metric sync, and each
+  # queue can be scaled independently: `docker compose up -d --scale worker-crawl=4`.
+  worker-crawl:
+    <<: *backend
+    command: ["celery", "-A", "app.celery_app.celery_app", "worker",
+              "-Q", "crawl", "-c", "2", "-n", "crawl@%h", "--loglevel=info"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  worker-sync:
+    <<: *backend
+    command: ["celery", "-A", "app.celery_app.celery_app", "worker",
+              "-Q", "sync", "-c", "4", "-n", "sync@%h", "--loglevel=info"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  worker-score:
+    <<: *backend
+    command: ["celery", "-A", "app.celery_app.celery_app", "worker",
+              "-Q", "score", "-c", "2", "-n", "score@%h", "--loglevel=info"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  worker-ai:
+    <<: *backend
+    command: ["celery", "-A", "app.celery_app.celery_app", "worker",
+              "-Q", "ai", "-c", "2", "-n", "ai@%h", "--loglevel=info"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  beat:
+    <<: *backend
+    container_name: seo_automation_beat
+    command: ["celery", "-A", "app.celery_app.celery_app", "beat", "--loglevel=info"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Baked into the client bundle, so it must be the URL a browser can reach.
+        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:-http://127.0.0.1:8000}
+    image: seo-automation-frontend:latest
+    container_name: seo_automation_frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      - api
+
+volumes:
+  seo_postgres_data:
+  seo_redis_data:

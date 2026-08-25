@@ -1,0 +1,157 @@
+"""URL normalisation, identity hashing and SSRF-safe destination checks."""
+
+from __future__ import annotations
+
+import hashlib
+import ipaddress
+import re
+import socket
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
+
+#: Tracking parameters stripped during normalisation so the same page is not counted twice.
+TRACKING_PARAMS = {
+    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "utm_id",
+    "gclid", "fbclid", "msclkid", "mc_cid", "mc_eid", "_ga", "ref", "ref_src",
+    "yclid", "igshid", "vero_id", "wickedid", "hsa_acc", "hsa_cam",
+}
+
+#: Extensions that are never HTML pages — skipped by the crawler frontier.
+NON_PAGE_EXTENSIONS = {
+    ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".avif", ".ico", ".bmp", ".tiff",
+    ".pdf", ".zip", ".gz", ".tar", ".rar", ".7z", ".dmg", ".exe", ".msi", ".apk",
+    ".mp3", ".mp4", ".avi", ".mov", ".wmv", ".webm", ".ogg", ".wav", ".m4a", ".flv",
+    ".css", ".js", ".mjs", ".map", ".json", ".xml", ".rss", ".atom", ".txt",
+    ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".csv", ".woff", ".woff2", ".ttf", ".eot",
+}
+
+
+def normalize_url(url: str, *, strip_tracking: bool = True) -> str:
+    """Canonicalise a URL for use as a stable page key.
+
+    Lowercases scheme and host, drops the fragment, removes a trailing slash from non-root paths,
+    strips known tracking parameters and sorts the remaining query.
+    """
+    parsed = urlparse(url.strip())
+    scheme = (parsed.scheme or "https").lower()
+    netloc = parsed.netloc.lower()
+
+    # Drop default ports so http://x:80/ and http://x/ are the same page.
+    if netloc.endswith(":80") and scheme == "http":
+        netloc = netloc[:-3]
+    elif netloc.endswith(":443") and scheme == "https":
+        netloc = netloc[:-4]
+
+    path = parsed.path or "/"
+    if path != "/" and path.endswith("/"):
+        path = path.rstrip("/") or "/"
+
+    query = parsed.query
+    if query and strip_tracking:
+        kept = [(k, v) for k, v in parse_qsl(query, keep_blank_values=True)
+                if k.lower() not in TRACKING_PARAMS]
+        query = urlencode(sorted(kept))
+
+    return urlunparse((scheme, netloc, path, "", query, ""))
+
+
+def url_hash(url: str) -> str:
+    """SHA-256 of the normalised URL — the stable identity key for a page."""
+    return hashlib.sha256(normalize_url(url).encode("utf-8")).hexdigest()
+
+
+def content_hash(text: str | None) -> str | None:
+    """SHA-256 of whitespace-collapsed page text; drives duplicate detection and AI caching."""
+    if not text:
+        return None
+    collapsed = re.sub(r"\s+", " ", text).strip().lower()
+    if not collapsed:
+        return None
+    return hashlib.sha256(collapsed.encode("utf-8")).hexdigest()
+
+
+def url_path(url: str) -> str:
+    """Path (plus query when present) used for GSC/GA4 matching and file→page mapping."""
+    parsed = urlparse(normalize_url(url))
+    path = parsed.path or "/"
+    return f"{path}?{parsed.query}" if parsed.query else path
+
+
+def domain_of(url: str) -> str:
+    return urlparse(url).netloc.lower().split(":")[0]
+
+
+def registrable_domain(url_or_host: str) -> str:
+    """Host without a leading ``www.`` — used when comparing sites across providers."""
+    host = url_or_host if "://" not in url_or_host else domain_of(url_or_host)
+    return host.lower().removeprefix("www.")
+
+
+def is_http_url(url: str) -> bool:
+    return urlparse(url).scheme in {"http", "https"}
+
+
+def is_same_domain(url: str, base_domain: str) -> bool:
+    return registrable_domain(domain_of(url)) == registrable_domain(base_domain)
+
+
+def is_probably_page(url: str) -> bool:
+    """False for URLs whose extension marks them as an asset rather than an HTML page."""
+    path = urlparse(url).path.lower()
+    dot = path.rfind(".")
+    if dot == -1 or "/" in path[dot:]:
+        return True
+    return path[dot:] not in NON_PAGE_EXTENSIONS
+
+
+def is_safe_url(url: str, allow_local: bool = False) -> bool:
+    """SSRF guard: reject non-HTTP schemes and any host resolving to a non-public address."""
+    if not is_http_url(url):
+        return False
+    host = domain_of(url)
+    if not host:
+        return False
+    if host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"} and not allow_local:
+        return False
+    if allow_local:
+        return True
+    try:
+        for *_, sockaddr in socket.getaddrinfo(host, None):
+            ip = ipaddress.ip_address(sockaddr[0])
+            if (
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip.is_reserved
+                or ip.is_multicast
+                or ip.is_unspecified
+            ):
+                return False
+    except (socket.gaierror, ValueError):
+        return False
+    return True
+
+
+def absolute_url(base: str, href: str) -> str | None:
+    """Resolve ``href`` against ``base``, returning ``None`` for non-navigable links."""
+    if not href:
+        return None
+    href = href.strip()
+    if not href or href.startswith(("#", "mailto:", "tel:", "javascript:", "data:", "sms:")):
+        return None
+    try:
+        url = normalize_url(urljoin(base, href))
+    except ValueError:
+        return None
+    return url if is_http_url(url) else None
+
+
+def matches_any_pattern(url: str, patterns: list[str] | None) -> bool:
+    """Test a URL against glob-ish include/exclude patterns (``*`` is the only wildcard)."""
+    if not patterns:
+        return False
+    path = url_path(url)
+    for pattern in patterns:
+        regex = "^" + ".*".join(re.escape(part) for part in pattern.split("*")) + "$"
+        if re.match(regex, path) or re.match(regex, url):
+            return True
+    return False

@@ -1,0 +1,105 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * A single dark palette. The dashboard is a dense data tool viewed for long stretches, so it
+ * commits to one deliberately low-contrast-background, high-contrast-text theme rather than
+ * chasing the OS setting.
+ */
+:root {
+  --surface: 15 23 42;   /* slate-900 */
+  --ink: 226 232 240;    /* slate-200 */
+  --muted: 148 163 184;  /* slate-400 */
+  --line: 51 65 85;      /* slate-700 */
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  @apply bg-slate-950 text-slate-200 antialiased;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+/* Tabular numerals keep score and metric columns aligned as values change. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+.card {
+  @apply rounded-xl border border-slate-800 bg-slate-900/60 shadow-sm;
+}
+
+.chip {
+  @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset;
+}
+
+.btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium
+         transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+.btn-primary {
+  @apply btn bg-sky-500 text-slate-950 hover:bg-sky-400;
+}
+
+.btn-secondary {
+  @apply btn border border-slate-700 bg-slate-800/60 text-slate-200 hover:bg-slate-800;
+}
+
+.btn-ghost {
+  @apply btn text-slate-400 hover:bg-slate-800/60 hover:text-slate-200;
+}
+
+.input {
+  @apply w-full rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm
+         text-slate-100 placeholder:text-slate-500
+         focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500;
+}
+
+.label {
+  @apply mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate-400;
+}
+
+.table-wrap {
+  /* Wide tables scroll inside their own container; the page body never scrolls sideways. */
+  @apply overflow-x-auto;
+}
+
+table.data {
+  @apply w-full border-collapse text-sm;
+}
+
+table.data thead th {
+  @apply whitespace-nowrap border-b border-slate-800 bg-slate-900/80 px-3 py-2.5
+         text-left text-xs font-semibold uppercase tracking-wide text-slate-400;
+}
+
+table.data tbody td {
+  @apply border-b border-slate-800/60 px-3 py-2.5 align-top;
+}
+
+table.data tbody tr:hover {
+  @apply bg-slate-800/40;
+}
+
+.sortable {
+  @apply cursor-pointer select-none hover:text-slate-200;
+}
+
+::-webkit-scrollbar {
+  height: 10px;
+  width: 10px;
+}
+::-webkit-scrollbar-track {
+  @apply bg-slate-950;
+}
+::-webkit-scrollbar-thumb {
+  @apply rounded-full bg-slate-700;
+}
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-slate-600;
+}
