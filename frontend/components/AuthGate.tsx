@@ -77,10 +77,23 @@ export function AuthGate({ children }: { children: ReactNode }) {
     router.replace("/login");
   }, [router]);
 
+  const [isSlow, setIsSlow] = useState(false);
+
+  useEffect(() => {
+    if (status !== "checking") return;
+    const timer = setTimeout(() => setIsSlow(true), 3000);
+    return () => clearTimeout(timer);
+  }, [status]);
+
   if (status === "checking") {
     return (
-      <div className="flex min-h-screen items-center justify-center">
+      <div className="flex min-h-screen flex-col items-center justify-center gap-3">
         <Spinner label="Checking your session…" />
+        {isSlow && (
+          <p className="text-xs text-slate-400 animate-pulse">
+            ⚡ Waking up backend server on Render (free tier cold start, ~30s)...
+          </p>
+        )}
       </div>
     );
   }
