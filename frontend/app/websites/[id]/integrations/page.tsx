@@ -69,6 +69,22 @@ function Integrations() {
   const statusOf = (provider: string) =>
     integrations.find((integration) => integration.provider === provider);
 
+  const [seeding, setSeeding] = useState(false);
+
+  const handleSeedDemo = async () => {
+    setSeeding(true);
+    setError("");
+    try {
+      await api.websites.seedDemo(websiteId);
+      setNotice("✨ Demo metrics populated! GSC, GA4, Semrush & Priority Scores are now active.");
+      await load();
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Could not seed demo data.");
+    } finally {
+      setSeeding(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="py-16">
@@ -98,6 +114,25 @@ function Integrations() {
           {notice}
         </div>
       )}
+
+      <div className="mb-6 rounded-xl border border-sky-500/30 bg-sky-500/10 p-4 text-slate-200">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="font-semibold text-sky-300">⚡ Client Demo Mode</h3>
+            <p className="text-xs text-slate-300">
+              Instantly populate Search Console, GA4 & Semrush metrics + Priority Scores for live demonstrations.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleSeedDemo}
+            disabled={seeding}
+            className="rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-50"
+          >
+            {seeding ? "Populating demo metrics..." : "✨ Populate Instant Demo Data"}
+          </button>
+        </div>
+      </div>
 
       <div className="space-y-4">
         <GoogleCard
