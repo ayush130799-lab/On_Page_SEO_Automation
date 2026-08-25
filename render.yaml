@@ -23,6 +23,8 @@ services:
         value: production
       - key: PORT
         value: "8000"
+      - key: CORS_ORIGINS
+        value: "*"
       - key: SECRET_KEY
         generateValue: true
 
