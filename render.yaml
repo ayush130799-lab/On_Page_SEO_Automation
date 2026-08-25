@@ -1,5 +1,5 @@
 services:
-  # 1. FastAPI Web API
+  # 1. FastAPI Web API (Handles API requests and in-process background crawl tasks)
   - type: web
     name: seo-automation-api
     env: docker
@@ -18,7 +18,7 @@ services:
           name: seo-redis
           property: connectionString
       - key: USE_CELERY
-        value: "true"
+        value: "false"
       - key: ENVIRONMENT
         value: production
       - key: PORT
@@ -26,33 +26,7 @@ services:
       - key: SECRET_KEY
         generateValue: true
 
-  # 2. Celery Worker (Crawl, Sync, Score, AI)
-  - type: worker
-    name: seo-automation-worker
-    env: docker
-    dockerfilePath: ./backend/Dockerfile
-    dockerContext: ./backend
-    dockerCommand: celery -A app.celery_app.celery_app worker -c 4 --loglevel=info
-    plan: starter
-    envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: seo-postgres
-          property: connectionString
-      - key: REDIS_URL
-        fromService:
-          type: redis
-          name: seo-redis
-          property: connectionString
-      - key: ENVIRONMENT
-        value: production
-      - key: SECRET_KEY
-        fromService:
-          type: web
-          name: seo-automation-api
-          envVarKey: SECRET_KEY
-
-  # 3. Managed Redis Instance
+  # 2. Managed Redis Instance
   - type: redis
     name: seo-redis
     plan: free
@@ -61,4 +35,5 @@ services:
 databases:
   - name: seo-postgres
     plan: free
+
 
