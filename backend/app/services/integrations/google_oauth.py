@@ -10,11 +10,14 @@ which keeps the API stateless behind a load balancer.
 
 from __future__ import annotations
 
+import json
 import logging
+import time
 from datetime import timedelta
 from typing import Any
 from urllib.parse import urlencode
 
+import jwt
 from sqlalchemy.orm import Session
 
 from ...config import settings
@@ -48,6 +51,14 @@ SCOPES = {
 
 #: Refresh a little before actual expiry so a long sync cannot straddle the boundary.
 EXPIRY_SKEW_SECONDS = 120
+
+#: RFC 7523 grant used for service-account (server-to-server) authentication.
+JWT_BEARER_GRANT = "urn:ietf:params:oauth:grant-type:jwt-bearer"
+
+#: Marker stored in the credential blob to distinguish the two auth modes.
+SERVICE_ACCOUNT = "service_account"
+
+REQUIRED_SERVICE_ACCOUNT_FIELDS = ("client_email", "private_key", "token_uri")
 
 
 def google_configured() -> bool:
@@ -165,6 +176,124 @@ async def refresh_access_token(refresh_token: str) -> dict[str, Any]:
     return response.json()
 
 
+
+# ── Service accounts (server-to-server) ─────────────────────────────────────
+#
+# The authorization-code flow above needs a human at a browser and, while the consent screen is
+# unverified, Google expires its refresh tokens after seven days. A service account has neither
+# problem: it authenticates with a signed assertion, so it suits scheduled syncs far better. The
+# trade-off is that access is granted per-property inside Search Console and Analytics rather than
+# by consent, which is why `verify_service_account` checks reachability immediately.
+
+
+def parse_service_account_key(raw: str | dict[str, Any]) -> dict[str, Any]:
+    """Validate a downloaded service-account JSON key and reduce it to what we store."""
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValidationError(
+                "That is not valid JSON. Paste the whole key file downloaded from Google Cloud."
+            ) from exc
+    else:
+        data = raw
+
+    if not isinstance(data, dict):
+        raise ValidationError("The service-account key must be a JSON object.")
+
+    if data.get("type") != SERVICE_ACCOUNT:
+        raise ValidationError(
+            'The key file is not a service account (its "type" should be "service_account"). '
+            "Create one under IAM & Admin -> Service Accounts -> Keys -> Add key -> JSON."
+        )
+
+    missing = [f for f in REQUIRED_SERVICE_ACCOUNT_FIELDS if not data.get(f)]
+    if missing:
+        raise ValidationError(f"The key file is missing: {', '.join(missing)}.")
+
+    if "-----BEGIN" not in data["private_key"]:
+        raise ValidationError(
+            "The private_key field does not look like a PEM key. If you pasted the JSON through "
+            "a shell, its newlines may have been mangled."
+        )
+
+    return {
+        "type": SERVICE_ACCOUNT,
+        "client_email": data["client_email"],
+        "private_key": data["private_key"],
+        "private_key_id": data.get("private_key_id", ""),
+        "project_id": data.get("project_id", ""),
+        "token_uri": data.get("token_uri", TOKEN_ENDPOINT),
+    }
+
+
+def is_service_account(credentials: dict[str, Any]) -> bool:
+    return credentials.get("type") == SERVICE_ACCOUNT
+
+
+def _build_assertion(credentials: dict[str, Any], scopes: list[str]) -> str:
+    """Sign the RFC 7523 JWT that is exchanged for an access token."""
+    now = int(time.time())
+    payload = {
+        "iss": credentials["client_email"],
+        "scope": " ".join(scopes),
+        "aud": credentials.get("token_uri", TOKEN_ENDPOINT),
+        "iat": now,
+        # Google caps assertion lifetime at one hour.
+        "exp": now + 3600,
+    }
+    headers = {}
+    if credentials.get("private_key_id"):
+        headers["kid"] = credentials["private_key_id"]
+
+    try:
+        return jwt.encode(
+            payload, credentials["private_key"], algorithm="RS256", headers=headers
+        )
+    except Exception as exc:
+        raise IntegrationError(
+            "The service-account private key could not be used to sign a request. "
+            "Re-download the key file from Google Cloud.",
+            code="integration_bad_service_account_key",
+        ) from exc
+
+
+async def mint_service_account_token(
+    credentials: dict[str, Any], provider: str
+) -> dict[str, Any]:
+    """Exchange a signed assertion for an access token."""
+    if provider not in SCOPES:
+        raise ValidationError(f"'{provider}' is not a Google-backed provider.")
+
+    assertion = _build_assertion(credentials, SCOPES[provider])
+    async with integration_client() as client:
+        response = await request_with_retry(
+            client,
+            "POST",
+            credentials.get("token_uri", TOKEN_ENDPOINT),
+            provider="Google",
+            data={"grant_type": JWT_BEARER_GRANT, "assertion": assertion},
+        )
+    return response.json()
+
+
+async def verify_service_account(credentials: dict[str, Any], provider: str) -> str:
+    """Mint a token immediately so a bad key or missing grant fails at connect time."""
+    try:
+        payload = await mint_service_account_token(credentials, provider)
+    except IntegrationError as exc:
+        raise IntegrationError(
+            f"Google rejected the service account: {exc.message} "
+            "Check that the key is current and that the Cloud project has the APIs enabled.",
+            code="integration_service_account_rejected",
+        ) from exc
+
+    token = payload.get("access_token")
+    if not token:
+        raise IntegrationError("Google returned no access token for the service account.")
+    return token
+
+
 async def get_access_token(db: Session, integration: Integration) -> str:
     """Return a valid access token, refreshing and persisting it when needed."""
     credentials = read_credentials(integration)
@@ -182,6 +311,20 @@ async def get_access_token(db: Session, integration: Integration) -> str:
                 return access_token
         except ValueError:
             pass  # malformed timestamp: fall through and refresh
+
+    if is_service_account(credentials):
+        # No refresh token exists; a fresh assertion is signed and exchanged instead.
+        payload = await mint_service_account_token(credentials, integration.provider)
+        expires_in = int(payload.get("expires_in", 3600))
+        credentials["access_token"] = payload.get("access_token", "")
+        credentials["expires_at"] = (utcnow() + timedelta(seconds=expires_in)).isoformat()
+        write_credentials(db, integration, credentials)
+        integration.token_expires_at = utcnow() + timedelta(seconds=expires_in)
+        db.commit()
+        logger.info(
+            "Minted a service-account access token for integration %s.", integration.id
+        )
+        return credentials["access_token"]
 
     refresh_token = credentials.get("refresh_token")
     if not refresh_token:

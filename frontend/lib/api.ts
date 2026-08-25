@@ -287,6 +287,15 @@ export const api = {
         method: "PUT",
         body: { property_id: propertyId },
       }),
+    connectServiceAccount: (
+      websiteId: number,
+      provider: "gsc" | "ga4",
+      payload: { key: string; site_url?: string; property_id?: string },
+    ) =>
+      request(`/api/websites/${websiteId}/integrations/${provider}/service-account`, {
+        method: "POST",
+        body: payload,
+      }),
     connectSemrush: (websiteId: number, payload: Record<string, unknown>) =>
       request(`/api/websites/${websiteId}/integrations/semrush`, {
         method: "POST",

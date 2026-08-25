@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from fastapi.responses import RedirectResponse
@@ -24,6 +25,7 @@ from ...schemas.integration import (
     SelectGA4PropertyRequest,
     SelectGSCPropertyRequest,
     SemrushConnectRequest,
+    ServiceAccountConnectRequest,
     SyncRequest,
     SyncResult,
 )
@@ -219,6 +221,89 @@ def select_ga4_property(
     integration.config = {**(integration.config or {}), "property_id": payload.property_id}
     db.commit()
     db.refresh(integration)
+    return integration
+
+
+@router.post(
+    "/websites/{website_id}/integrations/{provider}/service-account",
+    response_model=IntegrationResponse,
+)
+async def connect_service_account(
+    provider: str,
+    payload: ServiceAccountConnectRequest,
+    website: WritableWebsite,
+    db: DbSession,
+):
+    """Connect Search Console or GA4 with a service account — no browser, no token expiry.
+
+    Preferred for scheduled syncs: the authorization-code flow needs a human at a browser and,
+    while the consent screen is unverified, Google expires its refresh tokens after seven days.
+    Access is granted per-property in Search Console / Analytics by adding the service account's
+    email as a user, so this endpoint verifies reachability before storing anything.
+    """
+    if provider not in GOOGLE_PROVIDERS:
+        raise ValidationError(f"'{provider}' does not support service-account authentication.")
+
+    credentials = google_oauth.parse_service_account_key(payload.key)
+    token = await google_oauth.verify_service_account(credentials, provider)
+
+    config: dict[str, Any] = {"auth_mode": "service_account"}
+    selected: str | None = None
+
+    if provider == IntegrationProvider.GSC:
+        entries = await gsc.list_sites(token)
+        if not entries:
+            raise ValidationError(
+                f"The service account {credentials['client_email']} cannot see any Search "
+                "Console property. Add that email as a user of the property in Search Console "
+                "(Settings -> Users and permissions), then try again."
+            )
+        available = {entry.get("siteUrl") for entry in entries}
+        if payload.site_url:
+            if payload.site_url not in available:
+                raise ValidationError(
+                    f"The service account cannot access {payload.site_url}. "
+                    f"It can see: {', '.join(sorted(a for a in available if a))}"
+                )
+            selected = payload.site_url
+        else:
+            selected = await gsc.detect_site_url(token, website)
+        if selected:
+            config["site_url"] = selected
+    else:
+        properties = await ga4.list_properties(token)
+        if not properties:
+            raise ValidationError(
+                f"The service account {credentials['client_email']} cannot see any GA4 property. "
+                "Add that email as a Viewer on the property in Analytics "
+                "(Admin -> Property access management), then try again."
+            )
+        available = {p["property_id"] for p in properties}
+        if payload.property_id:
+            if payload.property_id not in available:
+                raise ValidationError(
+                    f"The service account cannot access property {payload.property_id}. "
+                    f"It can see: {', '.join(sorted(available))}"
+                )
+            selected = payload.property_id
+        elif len(properties) == 1:
+            selected = properties[0]["property_id"]
+        if selected:
+            config["property_id"] = selected
+
+    integration = upsert_integration(
+        db,
+        website,
+        provider,
+        credentials=credentials,
+        config=config,
+        account_label=credentials["client_email"],
+        status=IntegrationStatus.CONNECTED,
+    )
+    logger.info(
+        "Connected %s for website %s via service account (target=%s).",
+        provider, website.id, selected or "unselected",
+    )
     return integration
 
 

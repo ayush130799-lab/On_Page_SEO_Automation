@@ -57,6 +57,26 @@ class SelectGA4PropertyRequest(BaseModel):
     property_id: str = Field(min_length=1, description='GA4 numeric property id, e.g. "412345678".')
 
 
+class ServiceAccountConnectRequest(BaseModel):
+    """Connect Search Console or GA4 without the browser consent flow.
+
+    Paste the JSON key downloaded from Google Cloud. It is validated, exchanged for a live token
+    immediately, and stored encrypted — the key itself is never returned by any endpoint.
+    """
+
+    key: dict[str, Any] | str = Field(
+        description="The service-account JSON key, as an object or a raw JSON string."
+    )
+    site_url: str | None = Field(
+        default=None,
+        description='Search Console property, e.g. "sc-domain:example.com". Auto-detected if omitted.',
+    )
+    property_id: str | None = Field(
+        default=None,
+        description="GA4 numeric property id. Auto-detected when the account sees exactly one.",
+    )
+
+
 class SemrushConnectRequest(BaseModel):
     api_key: str = Field(min_length=8, max_length=200)
     database: str = Field(default="us", max_length=10)

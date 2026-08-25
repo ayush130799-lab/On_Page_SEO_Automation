@@ -124,6 +124,83 @@ the same thing, then use **Sync now**.
 
 ---
 
+## Alternative: connect with a service account (no browser, no expiry)
+
+Everything above uses the OAuth consent flow, which needs a human at a browser and — while the
+consent screen is unverified — hands out refresh tokens that **expire after 7 days**. For a
+platform whose whole point is unattended nightly syncs, a **service account** is the better fit:
+it authenticates with a signed assertion, so there is no consent screen, no browser, and no
+expiry to manage.
+
+The trade-off: access is granted **per property inside Search Console and Analytics**, not by
+consent. Enabling the APIs is not enough on its own.
+
+### 1. Create the service account and key
+
+**Google Cloud Console → IAM & Admin → Service Accounts → Create service account**
+
+Give it a name (no roles are needed — Cloud IAM roles do not grant Search Console or Analytics
+access). Then **Keys → Add key → Create new key → JSON** and download the file.
+
+Note the account's email, which looks like:
+
+```
+seo-bot@your-project.iam.gserviceaccount.com
+```
+
+The APIs from step 2 above still need to be enabled in the project.
+
+### 2. Grant it access to your data
+
+This is the step people miss — the key alone can see nothing.
+
+- **Search Console:** open the property → *Settings → Users and permissions → Add user* → paste
+  the service-account email → *Restricted* is enough.
+- **GA4:** *Admin → Property access management → +  → Add users* → paste the email → *Viewer*.
+
+### 3. Connect
+
+Through the dashboard: **Integrations → "Use a service account instead"**, paste the JSON.
+
+Through the verifier:
+
+```bash
+python -m scripts.verify_google service-account --website 1 --key ~/Downloads/sa-key.json
+```
+
+Through the API — the key goes in as a JSON string, so let a tool do the escaping:
+
+```bash
+# Get a token
+TOKEN=$(curl -s -X POST http://127.0.0.1:8000/api/auth/login -H "Content-Type: application/json" -d '{"email":"you@example.com","password":"your-password"}' | jq -r .access_token)
+
+# Wrap the key file and post it
+jq -n --slurpfile k sa-key.json '{key: $k[0]}' > payload.json
+curl -X POST http://127.0.0.1:8000/api/websites/1/integrations/gsc/service-account -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" --data-binary @payload.json
+rm payload.json
+```
+
+The endpoint accepts the key either as a JSON object (as above) or as a raw JSON string.
+
+
+The key is validated, exchanged for a live token, checked against the property, and only then
+stored encrypted. If the grant from step 2 is missing you get a message naming the exact screen
+to fix it on, and nothing is saved.
+
+### Which should you use?
+
+| | OAuth consent | Service account |
+|---|---|---|
+| Setup | Consent screen + test users | Grant an email on each property |
+| Browser needed | Yes, per connection | No |
+| Token lifetime | 7 days unverified, else until revoked | No expiry — minted per request |
+| Suits | A person connecting their own account | Scheduled syncs, CI, servers |
+| Access model | Everything the person can see | Only properties explicitly shared |
+
+Both use identical sync, storage and encryption paths; only the token acquisition differs.
+
+---
+
 ## When something fails
 
 | Symptom | Cause | Fix |
@@ -131,7 +208,9 @@ the same thing, then use **Sync now**.
 | `redirect_uri_mismatch` on the consent screen | The URI in Cloud Console differs from `GOOGLE_REDIRECT_URI` | Make them identical, including `http` vs `https` and `127.0.0.1` vs `localhost` |
 | `403: access_denied` before consent | Your account is not a test user | Add it under OAuth consent screen → Test users |
 | `403` when listing properties | The API is not enabled, or the account cannot see the property | Enable all three APIs in step 2; confirm access in the product's own UI |
-| `401` after it previously worked | Testing-mode refresh token expired (7 days) | Reconnect, or publish the consent screen |
+| `401` after it previously worked | Testing-mode refresh token expired (7 days) | Reconnect, or switch to a service account (no expiry) |
+| Service account sees no properties | The email was never granted on the property | Add it in Search Console *Users and permissions* / GA4 *Property access management* |
+| `invalid_grant` on a service account | Key revoked, or the clock is skewed | Re-download the key; assertions are time-signed, so check the host clock |
 | "Google did not return a refresh token" | Google only issues one on first consent | Revoke at [Account permissions](https://myaccount.google.com/permissions) and reconnect |
 | Rows fetched, none matched | URL-shape mismatch | For GSC, pick the right property variant — a `sc-domain:` property reports different URLs than an `https://` prefix property. The tool prints unmatched samples next to your page paths |
 | 0 rows fetched, no error | No data in the window, or wrong property | GSC lags 2–3 days; widen with `--days 90`. Verify the selected property is the one with traffic |

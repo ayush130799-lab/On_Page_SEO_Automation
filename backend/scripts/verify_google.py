@@ -13,6 +13,9 @@ Google's own errors ("403 Forbidden") do not say *which* of five setup steps was
     # 3. Sync and inspect what came back
     python -m scripts.verify_google sync --website 1 --provider gsc --days 28
 
+    # 2b. Or connect with a service account instead - no browser, no token expiry
+    python -m scripts.verify_google service-account --website 1 --key sa-key.json
+
     # 4. Everything at once
     python -m scripts.verify_google all --website 1
 
@@ -27,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import io
 import sys
 import time
 import webbrowser
@@ -48,7 +52,7 @@ from app.models import (
     Website,
 )
 from app.services.integrations import ga4, google_oauth, gsc
-from app.services.integrations.base import read_credentials
+from app.services.integrations.base import read_credentials, upsert_integration
 
 GREEN, RED, YELLOW, BLUE, DIM, RESET = (
     "\033[32m", "\033[31m", "\033[33m", "\033[36m", "\033[2m", "\033[0m",
@@ -81,23 +85,26 @@ def heading(message: str) -> None:
 # ── Step 1: configuration ───────────────────────────────────────────────────
 
 
-def check_config() -> bool:
+def check_config(require_oauth: bool = True) -> bool:
     """Verify the OAuth client is configured and the API is reachable."""
     heading("Configuration")
     healthy = True
 
-    if settings.google_client_id and settings.google_client_secret:
-        ok(f"OAuth client configured ({settings.google_client_id[:20]}...)")
+    if require_oauth:
+        if settings.google_client_id and settings.google_client_secret:
+            ok(f"OAuth client configured ({settings.google_client_id[:20]}...)")
+        else:
+            healthy = False
+            fail(
+                "GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are not set",
+                """
+                Google Cloud Console -> APIs & Services -> Credentials
+                -> Create credentials -> OAuth client ID -> Web application
+                Copy both values into backend/.env
+                """,
+            )
     else:
-        healthy = False
-        fail(
-            "GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are not set",
-            """
-            Google Cloud Console -> APIs & Services -> Credentials
-            -> Create credentials -> OAuth client ID -> Web application
-            Copy both values into backend/.env
-            """,
-        )
+        info("Service account mode — skipping OAuth client credential check.")
 
     if not settings.google_client_id.endswith(".apps.googleusercontent.com"):
         if settings.google_client_id:
@@ -242,6 +249,9 @@ def connect(website_id: int, provider: str, timeout_seconds: int = 300) -> bool:
                 ok(f"Connected as {integration.account_label or 'unknown account'}")
 
                 credentials = read_credentials(integration)
+                if google_oauth.is_service_account(credentials):
+                    ok("Service-account auth - no token expiry, no reconsent")
+                    return True
                 if credentials.get("refresh_token"):
                     ok("Refresh token stored (encrypted)")
                 else:
@@ -271,6 +281,101 @@ def connect(website_id: int, provider: str, timeout_seconds: int = 300) -> bool:
         fail("Timed out waiting for the callback")
         info("If the browser showed an error, the message there names the cause.")
         return False
+    finally:
+        db.close()
+
+
+
+def connect_service_account(website_id: int, provider: str, key_path: str) -> bool:
+    """Connect with a service-account key file - no browser, no token expiry."""
+    heading(f"Connecting {provider.upper()} with a service account")
+
+    try:
+        raw = io.open(key_path, encoding="utf-8").read()
+    except OSError as exc:
+        fail(f"Could not read {key_path}: {exc}")
+        return False
+
+    db = SessionLocal()
+    try:
+        website = db.get(Website, website_id)
+        if website is None:
+            fail(f"Website {website_id} does not exist")
+            return False
+
+        try:
+            credentials = google_oauth.parse_service_account_key(raw)
+        except Exception as exc:
+            fail(f"The key file was rejected: {exc}")
+            return False
+
+        ok(f"Key parsed for {credentials['client_email']}")
+
+        try:
+            token = asyncio.run(
+                google_oauth.verify_service_account(credentials, provider)
+            )
+            ok("Google accepted the service account")
+        except Exception as exc:
+            fail(f"Google rejected it: {exc}")
+            info(
+                "Check the key is current and that the Cloud project has the APIs enabled."
+            )
+            return False
+
+        config = {"auth_mode": "service_account"}
+        try:
+            if provider == IntegrationProvider.GSC:
+                entries = asyncio.run(gsc.list_sites(token))
+                if not entries:
+                    fail(
+                        "The service account cannot see any Search Console property",
+                        f"""
+                        Add {credentials['client_email']} as a user of the property:
+                        Search Console -> Settings -> Users and permissions -> Add user
+                        """,
+                    )
+                    return False
+                detected = asyncio.run(gsc.detect_site_url(token, website))
+                if detected:
+                    config["site_url"] = detected
+                    ok(f"Property auto-detected: {detected}")
+                else:
+                    warn("Could not auto-detect the property; select one before syncing")
+                    for entry in entries[:10]:
+                        info(f"  {entry.get('siteUrl')}")
+            else:
+                properties = asyncio.run(ga4.list_properties(token))
+                if not properties:
+                    fail(
+                        "The service account cannot see any GA4 property",
+                        f"""
+                        Add {credentials['client_email']} as a Viewer:
+                        Analytics -> Admin -> Property access management -> Add users
+                        """,
+                    )
+                    return False
+                if len(properties) == 1:
+                    config["property_id"] = properties[0]["property_id"]
+                    ok(
+                        f"Property auto-selected: {properties[0]['property_id']} "
+                        f"({properties[0]['display_name']})"
+                    )
+                else:
+                    warn("Several properties visible; select one before syncing")
+                    for prop in properties[:10]:
+                        info(f"  {prop['property_id']}  {prop['display_name']}")
+        except Exception as exc:
+            fail(f"Property discovery failed: {exc}")
+            return False
+
+        upsert_integration(
+            db, website, provider, credentials=credentials, config=config,
+            account_label=credentials["client_email"],
+            status=IntegrationStatus.CONNECTED,
+        )
+        ok("Stored (encrypted at rest)")
+        return True
     finally:
         db.close()
 
@@ -559,13 +664,19 @@ def main() -> int:
         epilog=__doc__,
     )
     parser.add_argument(
-        "command", choices=["check", "connect", "sync", "all"], help="What to run."
+        "command",
+        choices=["check", "connect", "service-account", "sync", "all"],
+        help="What to run.",
     )
     parser.add_argument("--website", type=int, default=1, help="Website id (default: 1).")
     parser.add_argument(
         "--provider", choices=["gsc", "ga4", "both"], default="both", help="Which provider."
     )
     parser.add_argument("--days", type=int, default=28, help="Sync window in days.")
+    parser.add_argument(
+        "--key",
+        help="Path to a service-account JSON key (for the service-account command).",
+    )
     args = parser.parse_args()
 
     providers = (
@@ -576,7 +687,7 @@ def main() -> int:
 
     print(f"{BLUE}Google integration verification{RESET}")
 
-    if not check_config():
+    if not check_config(require_oauth=(args.command not in ("service-account", "sync"))):
         print(f"\n{RED}Fix the configuration above before continuing.{RESET}")
         return 1
 
@@ -588,6 +699,24 @@ def main() -> int:
 
     if check_website(args.website) is None:
         return 1
+
+    if args.command == "service-account":
+        if not args.key:
+            print(f"{RED}--key is required: path to the service-account JSON file.{RESET}")
+            return 1
+        failures = 0
+        for provider in providers:
+            if not connect_service_account(args.website, provider, args.key):
+                failures += 1
+                continue
+            if not asyncio.run(check_api_access(args.website, provider)):
+                failures += 1
+        print()
+        if failures:
+            print(f"{RED}{failures} provider(s) failed.{RESET}")
+            return 1
+        print(f"{GREEN}Connected. Now run:  python -m scripts.verify_google sync{RESET}")
+        return 0
 
     failures = 0
     for provider in providers:
