@@ -7,6 +7,7 @@ services:
     dockerContext: ./backend
     plan: free
     healthCheckPath: /health
+    preDeployCommand: alembic upgrade head
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -21,6 +22,10 @@ services:
         value: "true"
       - key: ENVIRONMENT
         value: production
+      - key: PORT
+        value: "8000"
+      - key: SECRET_KEY
+        generateValue: true
 
   # 2. Celery Worker (Crawl, Sync, Score, AI)
   - type: worker
@@ -40,6 +45,13 @@ services:
           type: redis
           name: seo-redis
           property: connectionString
+      - key: ENVIRONMENT
+        value: production
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: seo-automation-api
+          envVarKey: SECRET_KEY
 
   # 3. Managed Redis Instance
   - type: redis
@@ -50,3 +62,4 @@ services:
 databases:
   - name: seo-postgres
     plan: free
+
