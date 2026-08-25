@@ -113,6 +113,16 @@ def create_app() -> FastAPI:
     app.include_router(webhooks.router)
     app.include_router(jobs.router)
 
+    @app.get("/", tags=["system"])
+    def root() -> dict[str, str]:
+        return {
+            "name": settings.app_name,
+            "version": app.version,
+            "status": "ok",
+            "health": "/health",
+            "docs": "/docs",
+        }
+
     @app.get("/health", tags=["system"])
     def health() -> dict[str, str]:
         return {"status": "ok", "version": app.version, "environment": settings.environment}
