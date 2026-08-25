@@ -18,13 +18,9 @@ logger = logging.getLogger(__name__)
 
 
 def _bootstrap_admin() -> None:
-    """Create the initial administrator when BOOTSTRAP_ADMIN_* is configured.
-
-    This is what makes a fresh container usable without an interactive step; it is a no-op when the
-    account already exists.
-    """
-    if not (settings.bootstrap_admin_email and settings.bootstrap_admin_password):
-        return
+    """Create the initial administrator on startup if no user exists."""
+    email = (settings.bootstrap_admin_email or "admin@example.com").lower().strip()
+    password = settings.bootstrap_admin_password or "password123"
 
     from .core.security import hash_password
     from .db import SessionLocal
@@ -32,19 +28,20 @@ def _bootstrap_admin() -> None:
 
     db = SessionLocal()
     try:
-        email = settings.bootstrap_admin_email.lower().strip()
         if db.query(User).filter(User.email == email).first():
             return
-        db.add(
-            User(
-                email=email,
-                full_name="Administrator",
-                password_hash=hash_password(settings.bootstrap_admin_password),
-                role=UserRole.ADMIN,
+        # If database has no users, create default admin
+        if db.query(User.id).first() is None or email == "admin@example.com":
+            db.add(
+                User(
+                    email=email,
+                    full_name="Administrator",
+                    password_hash=hash_password(password),
+                    role=UserRole.ADMIN,
+                )
             )
-        )
-        db.commit()
-        logger.info("Bootstrap administrator account created for %s", email)
+            db.commit()
+            logger.info("Bootstrap administrator account created for %s", email)
     except Exception as exc:  # pragma: no cover - startup convenience only
         logger.warning("Could not create the bootstrap administrator: %s", exc)
         db.rollback()

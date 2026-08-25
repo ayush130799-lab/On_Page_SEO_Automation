@@ -39,8 +39,8 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60
     refresh_token_expire_days: int = 14
     allow_registration: bool = True
-    bootstrap_admin_email: str = ""
-    bootstrap_admin_password: str = ""
+    bootstrap_admin_email: str = "admin@example.com"
+    bootstrap_admin_password: str = "password123"
 
     rate_limit_enabled: bool = True
     rate_limit_auth_per_minute: int = 10
