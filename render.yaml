@@ -4,7 +4,7 @@ services:
     name: seo-automation-api
     env: docker
     dockerfilePath: ./backend/Dockerfile
-    context: ./backend
+    dockerContext: ./backend
     plan: starter
     healthCheckPath: /health
     envVars:
@@ -27,7 +27,7 @@ services:
     name: seo-automation-worker
     env: docker
     dockerfilePath: ./backend/Dockerfile
-    context: ./backend
+    dockerContext: ./backend
     dockerCommand: celery -A app.celery_app.celery_app worker -c 4 --loglevel=info
     envVars:
       - key: DATABASE_URL
