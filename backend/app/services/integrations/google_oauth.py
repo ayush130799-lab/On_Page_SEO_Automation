@@ -71,7 +71,7 @@ def build_authorization_url(website_id: int, provider: str, user_id: int) -> str
         "scope": " ".join(SCOPES[provider]),
         # offline + consent guarantees a refresh token even on a repeat authorisation.
         "access_type": "offline",
-        "prompt": "consent",
+        "prompt": "consent select_account",
         "include_granted_scopes": "true",
         "state": state,
     }
