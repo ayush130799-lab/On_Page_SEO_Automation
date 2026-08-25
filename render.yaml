@@ -5,7 +5,7 @@ services:
     env: docker
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
-    plan: starter
+    plan: free
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
@@ -29,6 +29,7 @@ services:
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
     dockerCommand: celery -A app.celery_app.celery_app worker -c 4 --loglevel=info
+    plan: starter
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -43,10 +44,9 @@ services:
   # 3. Managed Redis Instance
   - type: redis
     name: seo-redis
-    plan: starter
+    plan: free
     ipAllowList: []
 
 databases:
   - name: seo-postgres
-    plan: starter
-
+    plan: free
