@@ -328,23 +328,14 @@ function GoogleCard({
             </button>
           </>
         ) : (
-          <>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void connect()}
-              className="btn-primary"
-            >
-              Connect with Google
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowServiceAccount(!showServiceAccount)}
-              className="rounded-lg border border-slate-700 bg-slate-800/80 px-3.5 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700 hover:text-white transition shadow-sm"
-            >
-              🔑 {showServiceAccount ? "Hide Service Account Form" : "Use a service account instead"}
-            </button>
-          </>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void connect()}
+            className="btn-primary"
+          >
+            Connect with Google OAuth
+          </button>
         )}
       </div>
 
@@ -354,24 +345,21 @@ function GoogleCard({
         </p>
       )}
 
-      {!connected && showServiceAccount && (
-        <div className="mt-4 border-t border-slate-800 pt-4">
-          <label className="label" htmlFor={`${provider}-sa`}>
-            Service-account JSON key
+      {!connected && (
+        <div className="mt-4 border-t border-slate-800/80 pt-4">
+          <label className="label font-medium text-slate-200" htmlFor={`${provider}-sa`}>
+            🔑 Or Connect via Service Account JSON key (Recommended - No Expiry)
           </label>
           <textarea
             id={`${provider}-sa`}
             rows={4}
-            className="input font-mono text-xs"
+            className="input font-mono text-xs mt-1.5 w-full"
             placeholder='{"type": "service_account", "project_id": "...", ...}'
             value={serviceAccountKey}
             onChange={(event) => setServiceAccountKey(event.target.value)}
           />
-          <p className="mt-1.5 text-xs text-slate-500">
-            Paste the whole key file from Google Cloud, then grant its{" "}
-            <code>client_email</code> access to the{" "}
-            {provider === "gsc" ? "Search Console property" : "GA4 property"}. No browser consent
-            and no 7-day token expiry - the right choice for scheduled syncs.
+          <p className="mt-1.5 text-xs text-slate-400">
+            Paste the whole key file from Google Cloud. Grants 24/7 background access with no 7-day token expiry.
           </p>
           <button
             type="button"
@@ -382,12 +370,11 @@ function GoogleCard({
                   key: serviceAccountKey,
                 });
                 setServiceAccountKey("");
-                setShowServiceAccount(false);
               })
             }
-            className="btn-primary mt-2"
+            className="btn-secondary mt-2.5"
           >
-            Connect with service account
+            Connect Service Account
           </button>
         </div>
       )}
