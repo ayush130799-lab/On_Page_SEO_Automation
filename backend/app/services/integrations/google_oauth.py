@@ -66,7 +66,7 @@ def build_authorization_url(website_id: int, provider: str, user_id: int) -> str
     state = create_state_token(website_id=website_id, provider=provider, user_id=user_id)
     params = {
         "client_id": settings.google_client_id,
-        "redirect_uri": settings.google_redirect_uri,
+        "redirect_uri": settings.resolved_google_redirect_uri,
         "response_type": "code",
         "scope": " ".join(SCOPES[provider]),
         # offline + consent guarantees a refresh token even on a repeat authorisation.

@@ -187,6 +187,14 @@ class Settings(BaseSettings):
         return self.environment.lower() in {"production", "prod"}
 
     @property
+    def resolved_google_redirect_uri(self) -> str:
+        if self.google_redirect_uri and not self.google_redirect_uri.startswith("http://127.0.0.1:8000"):
+            return self.google_redirect_uri
+        if self.public_base_url and not self.public_base_url.startswith("http://127.0.0.1:8000"):
+            return f"{self.public_base_url.rstrip('/')}/api/integrations/google/callback"
+        return self.google_redirect_uri
+
+    @property
     def default_priority_weights(self) -> dict[str, float]:
         return {
             "seo_severity": self.priority_weight_seo_severity,
