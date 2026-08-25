@@ -25,6 +25,8 @@ services:
         value: "8000"
       - key: CORS_ORIGINS
         value: "*"
+      - key: GOOGLE_REDIRECT_URI
+        value: "https://seo-automation-api-nq19.onrender.com/api/integrations/google/callback"
       - key: SECRET_KEY
         generateValue: true
 
