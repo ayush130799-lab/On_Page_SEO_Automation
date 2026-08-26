@@ -127,7 +127,7 @@ class Settings(BaseSettings):
     semrush_weight_backlinks: float = 0.15
 
     # Metric lookback window used when computing priority components.
-    priority_metric_window_days: int = 28
+    priority_metric_window_days: int = 90
 
     # ── AI ──────────────────────────────────────────────────────────────────
     ai_enabled: bool = True

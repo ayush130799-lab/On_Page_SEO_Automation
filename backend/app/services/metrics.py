@@ -2,7 +2,7 @@
 
 Both the priority engine and the dashboard need "the last N days for these pages", so the query
 lives here once. Everything is aggregated in SQL — pulling per-day rows into Python would not
-survive a 10 000-page site with a 28-day window.
+survive a 10 000-page site with a 90-day window.
 """
 
 from __future__ import annotations
