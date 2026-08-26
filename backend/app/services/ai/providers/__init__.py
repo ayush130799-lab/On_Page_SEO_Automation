@@ -72,6 +72,25 @@ def available_providers() -> list[str]:
     return [name for name in PROVIDERS if provider_credentials(name)[0]]
 
 
+def get_active_providers() -> list[LLMProvider]:
+    """Return initialized instances for ALL providers that currently have an API key configured.
+
+    Enables multi-provider load balancing and fallback retries across Groq, Gemini, OpenAI, etc.
+    """
+    active: list[LLMProvider] = []
+    for name in available_providers():
+        provider = get_provider(name)
+        if provider is not None and provider not in active:
+            active.append(provider)
+
+    if not active:
+        fallback = get_provider()
+        if fallback is not None:
+            active.append(fallback)
+
+    return active
+
+
 __all__ = [
     "AnthropicProvider",
     "GeminiProvider",
@@ -84,6 +103,7 @@ __all__ = [
     "PROVIDERS",
     "available_providers",
     "extract_json",
+    "get_active_providers",
     "get_provider",
     "provider_credentials",
 ]

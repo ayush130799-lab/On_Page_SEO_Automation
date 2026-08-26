@@ -37,7 +37,13 @@ from ...models import (
 )
 from ..metrics import aggregate_page_metrics
 from .prompts import REPAIR_PROMPT, SYSTEM_PROMPT, build_user_prompt
-from .providers import LLMError, LLMProvider, LLMRateLimitError, get_provider
+from .providers import (
+    LLMError,
+    LLMProvider,
+    LLMRateLimitError,
+    get_active_providers,
+    get_provider,
+)
 from .schema import PageRecommendation
 
 logger = logging.getLogger(__name__)
@@ -321,15 +327,20 @@ async def analyse_website(
         outcome.errors.append("AI analysis is disabled (AI_ENABLED=false).")
         return outcome
 
-    provider = get_provider()
-    if provider is None:
+    active_providers = get_active_providers()
+    single_p = get_provider()
+    if single_p is not None and not any(p.name == single_p.name for p in active_providers):
+        active_providers.append(single_p)
+
+    if not active_providers:
         outcome.errors.append(
-            f"No API key is configured for the '{settings.llm_provider}' provider."
+            f"No API key is configured for any LLM provider (attempted '{settings.llm_provider}')."
         )
         return outcome
 
-    outcome.provider = provider.name
-    outcome.model = provider.model
+    primary = get_provider() or active_providers[0]
+    outcome.provider = " + ".join(dict.fromkeys([p.name for p in active_providers]))
+    outcome.model = " / ".join(dict.fromkeys([p.model for p in active_providers]))
     window = settings.priority_metric_window_days
 
     if page_ids:
@@ -377,19 +388,33 @@ async def analyse_website(
     if not to_analyse:
         return outcome
 
-    semaphore = asyncio.Semaphore(settings.ai_concurrency)
+    # Scale concurrency with the number of available provider API keys.
+    concurrency = settings.ai_concurrency * max(1, len(active_providers))
+    semaphore = asyncio.Semaphore(concurrency)
     contexts = {page.id: _page_context(db, page, window) for page in to_analyse}
 
-    async def _one(page: Page):
-        try:
-            recommendation, response = await analyse_page(
-                provider, page, contexts[page.id], window_days=window, semaphore=semaphore
-            )
-            return page, recommendation, response, None
-        except Exception as exc:
-            return page, None, None, exc
+    async def _one(idx: int, page: Page):
+        # Round-robin primary provider assignment with fallback across all available providers.
+        assigned = active_providers[idx % len(active_providers)]
+        fallbacks = [p for p in active_providers if p.name != assigned.name]
+        try_order = [assigned] + fallbacks
 
-    results = await asyncio.gather(*[_one(page) for page in to_analyse])
+        last_exc = None
+        for prov in try_order:
+            try:
+                rec, resp = await analyse_page(
+                    prov, page, contexts[page.id], window_days=window, semaphore=semaphore
+                )
+                return page, rec, resp, None
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "AI provider %s failed for %s (%s); attempting fallback provider.",
+                    prov.name, page.url, exc,
+                )
+        return page, None, None, last_exc
+
+    results = await asyncio.gather(*[_one(idx, page) for idx, page in enumerate(to_analyse)])
 
     for page, recommendation, response, error in results:
         if error is not None or recommendation is None:
@@ -402,8 +427,8 @@ async def analyse_website(
                     website_id=website.id,
                     page_id=page.id,
                     crawl_run_id=crawl_run_id,
-                    provider=provider.name,
-                    model=provider.model,
+                    provider=primary.name,
+                    model=primary.model,
                     status="failed",
                     error=message[:1000],
                     content_hash=page.content_hash,

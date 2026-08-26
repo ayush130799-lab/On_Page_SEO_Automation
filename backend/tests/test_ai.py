@@ -641,6 +641,24 @@ class TestAnalyseWebsite:
         assert outcome.analysed == 1
         assert len(fake_provider.calls) == 1
 
+    async def test_multi_provider_load_balancing_and_failover(self, db, site, monkeypatch):
+        """When multiple AI providers are configured, pages are distributed round-robin with failover."""
+        provider_a = FakeProvider()
+        provider_a.name = "gemini"
+        provider_b = FakeProvider()
+        provider_b.name = "groq"
+
+        monkeypatch.setattr("app.config.settings.ai_enabled", True)
+        monkeypatch.setattr("app.services.ai.recommender.get_active_providers", lambda: [provider_a, provider_b])
+
+        add_page(db, site, "/p1", seo_score=50.0, issues=5, content_hash="p1")
+        add_page(db, site, "/p2", seo_score=50.0, issues=5, content_hash="p2")
+        db.commit()
+
+        outcome = await analyse_website(db, site)
+        assert outcome.analysed == 2
+        assert "gemini" in outcome.provider and "groq" in outcome.provider
+
 
 # ── API ─────────────────────────────────────────────────────────────────────
 
