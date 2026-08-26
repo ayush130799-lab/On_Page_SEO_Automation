@@ -360,9 +360,18 @@ class TestSelectionGate:
                  priority_score=95.0)
         db.commit()
 
-        selected, decisions = select_pages(db, site)
+        selected, decisions = select_pages(db, site, score_threshold=90.0)
         assert selected == []
         assert "healthy" in decisions[0].reason
+
+    def test_high_scoring_pages_are_selected_with_default_threshold(self, db, site):
+        page = add_page(db, site, "/high_score", seo_score=96.0, severity=Severity.LOW, issues=1,
+                        priority_score=95.0)
+        db.commit()
+
+        selected, decisions = select_pages(db, site)
+        assert [p.id for p in selected] == [page.id]
+        assert "threshold" in decisions[0].reason
 
     def test_low_scoring_pages_are_selected(self, db, site):
         page = add_page(db, site, "/broken", seo_score=45.0, issues=8)

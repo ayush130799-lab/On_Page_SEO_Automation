@@ -140,14 +140,14 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
 
-    ai_max_pages: int = 100
+    ai_max_pages: int = 5000
     ai_concurrency: int = 5
     ai_max_content_length: int = 8000
     ai_max_retries: int = 3
     ai_timeout_seconds: int = 90
-    # A page is only sent to the LLM when its SEO score is below this threshold
-    # (or it carries a CRITICAL issue).
-    ai_seo_score_threshold: float = 90.0
+    # A page is sent to the LLM when its SEO score is at or below this threshold
+    # (set to 100.0 to analyze all pages regardless of SEO score).
+    ai_seo_score_threshold: float = 100.0
     ai_reuse_when_unchanged: bool = True
 
     # ── Integrations ────────────────────────────────────────────────────────

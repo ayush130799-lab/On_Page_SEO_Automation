@@ -123,13 +123,13 @@ def select_pages(
             decision.reason = "carries a CRITICAL issue"
         elif page.seo_score is None:
             decision.reason = "not audited yet"
-        elif page.seo_score > threshold:
-            decision.reason = f"healthy (SEO {page.seo_score} > {threshold})"
         elif page.issue_count == 0:
             decision.reason = "no outstanding issues"
+        elif page.seo_score > threshold:
+            decision.reason = f"healthy (SEO {page.seo_score} > {threshold})"
         else:
             decision.selected = True
-            decision.reason = f"SEO {page.seo_score} is below the {threshold} threshold"
+            decision.reason = f"SEO {page.seo_score} is at or below the {threshold} threshold"
 
         if decision.selected:
             selected.append(page)

@@ -24,7 +24,7 @@ router = APIRouter(prefix="/api", tags=["recommendations"])
 
 
 class AnalyseRequest(BaseModel):
-    max_pages: int | None = Field(default=None, ge=1, le=1000)
+    max_pages: int | None = Field(default=None, ge=1, le=10000)
     score_threshold: float | None = Field(default=None, ge=0, le=100)
     page_ids: list[int] | None = Field(default=None, max_length=500)
     force: bool = Field(
@@ -114,9 +114,9 @@ def list_providers(_: CurrentUser):
 def preview_selection(
     website: ReadableWebsite,
     db: DbSession,
-    max_pages: int | None = Query(None, ge=1, le=1000),
+    max_pages: int | None = Query(None, ge=1, le=10000),
     score_threshold: float | None = Query(None, ge=0, le=100),
-    limit: int = Query(100, ge=1, le=1000),
+    limit: int = Query(500, ge=1, le=10000),
 ):
     """Which pages would be sent to the model, and why — the cost-control view.
 
