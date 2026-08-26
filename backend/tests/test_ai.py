@@ -242,24 +242,26 @@ class TestJsonExtraction:
 class TestProviders:
     def test_no_key_configured_returns_none_rather_than_raising(self, monkeypatch):
         """AI is an enrichment layer; a deployment without a key must still work."""
-        for key in ("groq_api_key", "anthropic_api_key", "openai_api_key"):
+        for key in ("gemini_api_key", "groq_api_key", "anthropic_api_key", "openai_api_key"):
             monkeypatch.setattr(f"app.config.settings.{key}", "")
         assert get_provider() is None
         assert available_providers() == []
 
     def test_each_provider_can_be_selected(self, monkeypatch):
+        monkeypatch.setattr("app.config.settings.gemini_api_key", "gem-x")
         monkeypatch.setattr("app.config.settings.groq_api_key", "gsk-x")
         monkeypatch.setattr("app.config.settings.anthropic_api_key", "sk-ant-x")
         monkeypatch.setattr("app.config.settings.openai_api_key", "sk-x")
 
+        assert get_provider("gemini").name == "gemini"
         assert get_provider("groq").name == "groq"
         assert get_provider("anthropic").name == "anthropic"
         assert get_provider("openai").name == "openai"
-        assert set(available_providers()) == {"groq", "anthropic", "openai"}
+        assert set(available_providers()) == {"gemini", "groq", "anthropic", "openai"}
 
-    def test_an_unknown_provider_falls_back_to_groq(self, monkeypatch):
-        monkeypatch.setattr("app.config.settings.groq_api_key", "gsk-x")
-        assert get_provider("mystery-llm").name == "groq"
+    def test_an_unknown_provider_falls_back_to_gemini(self, monkeypatch):
+        monkeypatch.setattr("app.config.settings.gemini_api_key", "gem-x")
+        assert get_provider("mystery-llm").name == "gemini"
 
     def test_the_active_provider_follows_configuration(self, monkeypatch):
         monkeypatch.setattr("app.config.settings.anthropic_api_key", "sk-ant-x")
@@ -645,6 +647,7 @@ class TestAnalyseWebsite:
 
 class TestRecommendationApi:
     def test_provider_status_is_exposed(self, client, member_user, monkeypatch):
+        monkeypatch.setattr("app.config.settings.llm_provider", "groq")
         monkeypatch.setattr("app.config.settings.groq_api_key", "gsk-x")
         body = client.get("/api/ai/providers", headers=auth_headers(member_user)).json()
         assert body["active"] == "groq"

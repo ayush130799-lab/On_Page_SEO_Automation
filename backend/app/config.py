@@ -131,8 +131,10 @@ class Settings(BaseSettings):
 
     # ── AI ──────────────────────────────────────────────────────────────────
     ai_enabled: bool = True
-    llm_provider: str = "groq"  # groq | anthropic | openai
+    llm_provider: str = "gemini"  # gemini | groq | anthropic | openai
 
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.5-flash"
     groq_api_key: str = ""
     groq_model: str = "openai/gpt-oss-20b"
     anthropic_api_key: str = ""

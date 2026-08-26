@@ -17,12 +17,14 @@ from .base import (
     LLMResponse,
     extract_json,
 )
+from .gemini_provider import GeminiProvider
 from .groq_provider import GroqProvider
 from .openai_provider import OpenAIProvider
 
 logger = logging.getLogger(__name__)
 
 PROVIDERS: dict[str, type[LLMProvider]] = {
+    "gemini": GeminiProvider,
     "groq": GroqProvider,
     "anthropic": AnthropicProvider,
     "openai": OpenAIProvider,
@@ -32,6 +34,7 @@ PROVIDERS: dict[str, type[LLMProvider]] = {
 def provider_credentials(name: str) -> tuple[str, str]:
     """Return ``(api_key, model)`` for a provider name."""
     return {
+        "gemini": (settings.gemini_api_key, settings.gemini_model),
         "groq": (settings.groq_api_key, settings.groq_model),
         "anthropic": (settings.anthropic_api_key, settings.anthropic_model),
         "openai": (settings.openai_api_key, settings.openai_model),
@@ -39,21 +42,27 @@ def provider_credentials(name: str) -> tuple[str, str]:
 
 
 def get_provider(name: str | None = None) -> LLMProvider | None:
-    """Build the configured provider, or ``None`` when no key is available.
+    """Build the configured provider, or ``None`` when no key is available."""
+    requested = (name or settings.llm_provider or "gemini").strip().lower()
 
-    Returning ``None`` rather than raising is deliberate: a deployment with no LLM key must still
-    crawl, audit, score and prioritise. AI is an enrichment layer, not a dependency.
-    """
-    requested = (name or settings.llm_provider or "groq").strip().lower()
-    provider_class = PROVIDERS.get(requested)
-    if provider_class is None:
-        logger.warning("Unknown LLM provider '%s'; falling back to groq.", requested)
-        requested, provider_class = "groq", GroqProvider
-
+    # If the requested provider has no API key, pick any provider that DOES have a key.
     api_key, model = provider_credentials(requested)
     if not api_key:
-        logger.info("LLM provider '%s' has no API key configured.", requested)
-        return None
+        available = available_providers()
+        if available:
+            requested = available[0]
+            api_key, model = provider_credentials(requested)
+        else:
+            logger.info("No LLM provider has an API key configured.")
+            return None
+
+    provider_class = PROVIDERS.get(requested)
+    if provider_class is None:
+        logger.warning("Unknown LLM provider '%s'; falling back to gemini.", requested)
+        requested, provider_class = "gemini", GeminiProvider
+        api_key, model = provider_credentials(requested)
+        if not api_key:
+            return None
 
     return provider_class(api_key=api_key, model=model, timeout=settings.ai_timeout_seconds)
 
@@ -65,6 +74,7 @@ def available_providers() -> list[str]:
 
 __all__ = [
     "AnthropicProvider",
+    "GeminiProvider",
     "GroqProvider",
     "LLMError",
     "LLMProvider",

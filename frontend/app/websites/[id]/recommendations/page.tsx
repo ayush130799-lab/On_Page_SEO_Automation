@@ -132,7 +132,7 @@ function Recommendations() {
       {aiUnavailable && (
         <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
           AI analysis is unavailable: no model provider is configured. Set{" "}
-          <code>GROQ_API_KEY</code>, <code>ANTHROPIC_API_KEY</code> or <code>OPENAI_API_KEY</code>{" "}
+          <code>GEMINI_API_KEY</code>, <code>GROQ_API_KEY</code>, <code>ANTHROPIC_API_KEY</code> or <code>OPENAI_API_KEY</code>{" "}
           and restart the API. Everything else on this platform works without it.
         </div>
       )}
