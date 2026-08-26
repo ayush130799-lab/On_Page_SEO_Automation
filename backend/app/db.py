@@ -56,6 +56,10 @@ def _sqlite_engine(url: str = SQLITE_FALLBACK_URL) -> Engine:
 def create_resilient_engine() -> Engine:
     """Build the engine, falling back to SQLite when PostgreSQL is unavailable."""
     db_url = settings.database_url
+    if db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql+psycopg://", 1)
+    elif db_url.startswith("postgresql://") and "+psycopg" not in db_url:
+        db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
 
     if db_url.startswith("sqlite"):
         return _sqlite_engine(db_url)
