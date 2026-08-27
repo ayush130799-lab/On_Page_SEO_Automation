@@ -252,10 +252,18 @@ class Crawler:
         async with self._lock:
             self.pages.append(page)
             if self.config.follow_links and not self.config.target_urls:
-                for link in page.internal_links:
-                    self._enqueue(link)
+                is_non_canonical = False
                 if page.canonical_url:
-                    self._enqueue(page.canonical_url)
+                    norm_canonical = normalize_url(page.canonical_url)
+                    norm_own = normalize_url(page.final_url or page.url)
+                    if norm_canonical != norm_own:
+                        is_non_canonical = True
+                        self._enqueue(norm_canonical)
+
+                # Only expand internal links from canonical pages to avoid exponential parameter link loops
+                if not is_non_canonical:
+                    for link in page.internal_links:
+                        self._enqueue(link)
                 for hop in page.redirect_chain:
                     self._enqueue(hop)
 

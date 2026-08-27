@@ -8,12 +8,32 @@ import re
 import socket
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
-#: Tracking parameters stripped during normalisation so the same page is not counted twice.
-TRACKING_PARAMS = {
+#: Tracking, session, sorting, view and state parameters stripped during normalisation so duplicate parameter variations are not counted as separate pages.
+NON_CONTENT_PARAMS = {
+    # Analytics & Ad Tracking
     "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "utm_id",
-    "gclid", "fbclid", "msclkid", "mc_cid", "mc_eid", "_ga", "ref", "ref_src",
-    "yclid", "igshid", "vero_id", "wickedid", "hsa_acc", "hsa_cam",
+    "gclid", "fbclid", "msclkid", "mc_cid", "mc_eid", "_ga", "_gl", "ref", "ref_src",
+    "yclid", "igshid", "vero_id", "wickedid", "hsa_acc", "hsa_cam", "fb_action_ids",
+    "fb_action_types", "fb_source", "action_object_map", "s_kwcid", "dclid",
+    
+    # Sessions, Auth & Security Tokens
+    "session", "sessionid", "sid", "phpsessid", "jsessionid", "asp.net_sessionid",
+    "auth", "authtoken", "token", "access_token", "key", "apikey", "nonce", "_t",
+
+    # View, Layout, Display & Theme State
+    "view", "mode", "layout", "display", "theme", "style", "format", "output",
+    "preview", "tab", "popup", "modal", "print", "export", "device", "lang_choice",
+
+    # Sort, Order & Filter State
+    "sort", "order", "orderby", "dir", "direction", "sort_by", "sort_order", "sortby", "sortorder",
+
+    # Actions, Interactions & Shares
+    "action", "do", "add-to-cart", "replytocom", "share", "social", "download",
+
+    # Cache busters & Timestamps
+    "_", "cb", "v", "ver", "version", "cache", "nc", "rnd", "t", "timestamp",
 }
+TRACKING_PARAMS = NON_CONTENT_PARAMS
 
 #: Extensions that are never HTML pages — skipped by the crawler frontier.
 NON_PAGE_EXTENSIONS = {
@@ -29,7 +49,7 @@ def normalize_url(url: str, *, strip_tracking: bool = True) -> str:
     """Canonicalise a URL for use as a stable page key.
 
     Lowercases scheme and host, drops the fragment, removes a trailing slash from non-root paths,
-    strips known tracking parameters and sorts the remaining query.
+    normalises multiple slashes, strips tracking/state/session parameters and sorts the remaining query.
     """
     parsed = urlparse(url.strip())
     scheme = (parsed.scheme or "https").lower()
@@ -42,14 +62,22 @@ def normalize_url(url: str, *, strip_tracking: bool = True) -> str:
         netloc = netloc[:-4]
 
     path = parsed.path or "/"
+    path = re.sub(r"/{2,}", "/", path)
     if path != "/" and path.endswith("/"):
         path = path.rstrip("/") or "/"
 
     query = parsed.query
     if query and strip_tracking:
-        kept = [(k, v) for k, v in parse_qsl(query, keep_blank_values=True)
-                if k.lower() not in TRACKING_PARAMS]
-        query = urlencode(sorted(kept))
+        kept = []
+        for k, v in parse_qsl(query, keep_blank_values=True):
+            k_lower = k.lower()
+            if k_lower in NON_CONTENT_PARAMS:
+                continue
+            # Strip redundant first page pagination parameter (page=1, p=1, pg=1)
+            if k_lower in {"page", "p", "pg"} and v in {"1", "0"}:
+                continue
+            kept.append((k, v))
+        query = urlencode(sorted(kept)) if kept else ""
 
     return urlunparse((scheme, netloc, path, "", query, ""))
 
@@ -95,8 +123,12 @@ def is_same_domain(url: str, base_domain: str) -> bool:
 
 
 def is_probably_page(url: str) -> bool:
-    """False for URLs whose extension marks them as an asset rather than an HTML page."""
+    """False for URLs whose extension or path marks them as an asset or non-page endpoint."""
     path = urlparse(url).path.lower()
+
+    if any(seg in path for seg in ("/wp-json/", "/wp-admin/", "/feed/", "/cdn-cgi/", "/api/")):
+        return False
+
     dot = path.rfind(".")
     if dot == -1 or "/" in path[dot:]:
         return True
