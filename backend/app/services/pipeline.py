@@ -344,6 +344,48 @@ def refresh_website_summary(db: Session, website: Website) -> None:
     website.last_crawled_at = _now()
 
 
+def cleanup_website_parameter_pages(db: Session, website: Website) -> int:
+    """Deactivate duplicate parameter variant Page rows created during older crawls or metric syncs."""
+    active_pages = db.scalars(
+        select(Page).where(Page.website_id == website.id, Page.is_active.is_(True))
+    ).all()
+
+    deactivated = 0
+    seen_canonical_hashes: set[str] = set()
+
+    # Sort pages so clean base URLs (without parameters) come first
+    sorted_pages = sorted(active_pages, key=lambda p: (1 if "?" in p.url else 0, len(p.url)))
+
+    for page in sorted_pages:
+        norm = normalize_url(page.url)
+        norm_hash = url_hash(norm)
+
+        if norm_hash in seen_canonical_hashes:
+            page.is_active = False
+            deactivated += 1
+        else:
+            seen_canonical_hashes.add(norm_hash)
+            if page.url != norm:
+                page.url = norm
+                page.url_hash = norm_hash
+                page.path = url_path(norm)
+
+    if deactivated > 0:
+        db.flush()
+        active = select(Page).where(Page.website_id == website.id, Page.is_active.is_(True))
+        website.total_pages = db.scalar(select(func.count()).select_from(active.subquery())) or 0
+        website.average_seo_score = db.scalar(
+            select(func.avg(Page.seo_score)).where(
+                Page.website_id == website.id, Page.is_active.is_(True), Page.seo_score.isnot(None)
+            )
+        )
+        if website.average_seo_score is not None:
+            website.average_seo_score = round(float(website.average_seo_score), 1)
+        db.commit()
+
+    return deactivated
+
+
 # ── Entry point ─────────────────────────────────────────────────────────────
 
 

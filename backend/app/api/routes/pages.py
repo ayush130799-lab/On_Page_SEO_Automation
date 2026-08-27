@@ -122,6 +122,9 @@ def list_pages(
     """
     window = window_days or settings.priority_metric_window_days
 
+    from ...services.pipeline import cleanup_website_parameter_pages
+    cleanup_website_parameter_pages(db, website)
+
     stmt = select(Page).where(Page.website_id == website.id)
     if not include_inactive:
         stmt = stmt.where(Page.is_active.is_(True))

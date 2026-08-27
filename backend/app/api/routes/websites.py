@@ -153,6 +153,8 @@ def list_websites(
 
 @router.get("/{website_id}", response_model=WebsiteDetailResponse)
 def get_website(website: ReadableWebsite, db: DbSession):
+    from ...services.pipeline import cleanup_website_parameter_pages
+    cleanup_website_parameter_pages(db, website)
     return _detail(db, website)
 
 
