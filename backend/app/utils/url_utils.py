@@ -20,6 +20,10 @@ NON_CONTENT_PARAMS = {
     "session", "sessionid", "sid", "phpsessid", "jsessionid", "asp.net_sessionid",
     "auth", "authtoken", "token", "access_token", "key", "apikey", "nonce", "_t",
 
+    # Redirects & Navigation Targets
+    "redirect", "redirect_to", "redirect_uri", "next", "return", "return_to",
+    "return_url", "dest", "destination", "target", "goto", "continue", "forward", "back",
+
     # View, Layout, Display & Theme State
     "view", "mode", "layout", "display", "theme", "style", "format", "output",
     "preview", "tab", "popup", "modal", "print", "export", "device", "lang_choice",
@@ -123,10 +127,16 @@ def is_same_domain(url: str, base_domain: str) -> bool:
 
 
 def is_probably_page(url: str) -> bool:
-    """False for URLs whose extension or path marks them as an asset or non-page endpoint."""
+    """False for URLs whose extension or path marks them as an asset, auth, or non-page endpoint."""
     path = urlparse(url).path.lower()
 
-    if any(seg in path for seg in ("/wp-json/", "/wp-admin/", "/feed/", "/cdn-cgi/", "/api/")):
+    if any(
+        seg in path
+        for seg in (
+            "/wp-json/", "/wp-admin/", "/feed/", "/cdn-cgi/", "/api/",
+            "/login", "/signup", "/register", "/logout", "/auth/", "/cart", "/checkout"
+        )
+    ):
         return False
 
     dot = path.rfind(".")
