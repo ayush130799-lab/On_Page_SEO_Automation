@@ -131,12 +131,12 @@ class PlaywrightRenderer:
                     logger.debug("goto domcontentloaded timeout/error for %s: %s", url, goto_exc)
 
                 try:
-                    await page.wait_for_load_state("load", timeout=3000)
+                    await page.wait_for_load_state("load", timeout=1500)
                 except Exception:
                     pass
 
-                # Give client-side frameworks (React/Next.js/Vue) 1s to mount DOM nodes
-                await page.wait_for_timeout(1000)
+                # Give client-side frameworks (React/Next.js/Vue) 300ms to mount DOM nodes
+                await page.wait_for_timeout(300)
 
                 html = await page.content()
                 if html:

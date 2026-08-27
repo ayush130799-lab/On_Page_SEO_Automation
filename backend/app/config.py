@@ -63,10 +63,10 @@ class Settings(BaseSettings):
 
     # JavaScript rendering (Playwright) — fallback only, never the default path.
     render_enabled: bool = True
-    render_concurrency: int = 3
-    render_timeout_ms: int = 15000
+    render_concurrency: int = 5
+    render_timeout_ms: int = 6000
     render_min_text_length: int = 400
-    render_max_pages: int = 250
+    render_max_pages: int = 150
 
     # ── SEO scoring weights (per rule check id) ─────────────────────────────
     # Consumed by app.services.seo.scoring. Overridable per website via settings.

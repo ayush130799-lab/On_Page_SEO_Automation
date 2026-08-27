@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 MAX_SITEMAP_DEPTH = 4
 MAX_SITEMAPS_PER_INDEX = 50
 
-_LOC_RE = re.compile(r"<loc>\s*(https?://[^<\s]+)\s*</loc>", re.IGNORECASE)
+_LOC_RE = re.compile(r"(?<![a-zA-Z0-9_:-])<loc>\s*(https?://[^<\s]+)\s*</loc>", re.IGNORECASE)
 _SITEMAP_BLOCK_RE = re.compile(r"<sitemap[\s>].*?</sitemap>", re.IGNORECASE | re.DOTALL)
 
 
