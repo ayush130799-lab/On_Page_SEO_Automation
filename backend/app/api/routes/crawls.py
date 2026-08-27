@@ -77,11 +77,23 @@ def start_crawl(
     background_tasks: BackgroundTasks,
 ):
     """Queue a crawl. One active run per website — re-crawling mid-run would double the work."""
+    from datetime import datetime, timezone
+
     active = db.scalar(
         select(CrawlRun).where(
             CrawlRun.website_id == website.id, CrawlRun.status.in_(ACTIVE_STATUSES)
         )
     )
+    if active is not None:
+        ref_time = active.started_at or active.created_at
+        if ref_time:
+            ref_utc = ref_time.replace(tzinfo=timezone.utc) if ref_time.tzinfo is None else ref_time
+            if (datetime.now(timezone.utc) - ref_utc).total_seconds() > 400:
+                active.status = RunStatus.FAILED
+                active.error_message = "Crawl process interrupted by server restart."
+                db.commit()
+                active = None
+
     if active is not None:
         raise ConflictError(
             f"Crawl run {active.id} is already {active.status} for this website.",
@@ -139,8 +151,21 @@ def get_crawl(crawl_run_id: int, user: CurrentUser, db: DbSession):
         raise NotFoundError(f"Crawl run {crawl_run_id} was not found.")
 
     from ...core.deps import get_website_for_read
+    from datetime import datetime, timezone
 
     get_website_for_read(run.website_id, user, db)  # authorization check
+
+    # Auto-fail stuck/orphaned runs from process restarts prior to deployment
+    if run.status in ACTIVE_STATUSES:
+        ref_time = run.started_at or run.created_at
+        if ref_time:
+            ref_utc = ref_time.replace(tzinfo=timezone.utc) if ref_time.tzinfo is None else ref_time
+            if (datetime.now(timezone.utc) - ref_utc).total_seconds() > 400:
+                run.status = RunStatus.FAILED
+                run.error_message = "Crawl process interrupted by server restart."
+                db.commit()
+                db.refresh(run)
+
     return run
 
 
