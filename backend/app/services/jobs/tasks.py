@@ -99,6 +99,11 @@ def run_sync_task(self, website_id: int, provider: str, days: int | None = None)
 
                 website.last_synced_at = job.started_at
                 db.commit()
+
+                # Re-score priority scores with newly imported metrics
+                from ..priority import score_website
+                score_website(db, website)
+
                 job.result = result
                 return result
     except Exception as exc:

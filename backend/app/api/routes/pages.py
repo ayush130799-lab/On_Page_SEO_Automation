@@ -169,10 +169,26 @@ def list_pages(
             SEVERITY_ORDER.asc() if descending else SEVERITY_ORDER.desc(), Page.id.asc()
         )
     else:
+        ga4, gsc = _metric_subquery(db, website.id, window)
+        stmt = stmt.outerjoin(ga4, ga4.c.page_id == Page.id).outerjoin(
+            gsc, gsc.c.page_id == Page.id
+        )
         column = SORTABLE.get(sort, Page.priority_score)
         ordering = column.desc().nullslast() if descending else column.asc().nullsfirst()
-        # Priority is the headline number; break ties with technical urgency then lowest score.
-        stmt = stmt.order_by(ordering, SEVERITY_ORDER.asc(), Page.seo_score.asc().nullsfirst())
+        clicks_col = func.coalesce(gsc.c.clicks, 0)
+        impr_col = func.coalesce(gsc.c.impressions, 0)
+        users_col = func.coalesce(ga4.c.users, 0)
+        conv_col = func.coalesce(ga4.c.conversions, 0.0)
+        # Priority is headline number; break ties with real engagement (clicks, impressions, users, conversions), then technical urgency.
+        stmt = stmt.order_by(
+            ordering,
+            clicks_col.desc() if descending else clicks_col.asc(),
+            impr_col.desc() if descending else impr_col.asc(),
+            users_col.desc() if descending else users_col.asc(),
+            conv_col.desc() if descending else conv_col.asc(),
+            SEVERITY_ORDER.asc(),
+            Page.seo_score.asc().nullsfirst(),
+        )
 
     rows = db.scalars(stmt.limit(limit).offset(offset)).all()
     page_ids = [row.id for row in rows]

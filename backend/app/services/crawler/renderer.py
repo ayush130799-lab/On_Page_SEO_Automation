@@ -15,9 +15,10 @@ from ...config import settings
 
 logger = logging.getLogger(__name__)
 
-#: Root elements that frameworks mount into. An empty one means the page is client-rendered.
+#: Root elements that frameworks mount into or framework hydration scripts.
 _SPA_ROOTS = re.compile(
-    r'<(?:div|main)[^>]+id=["\'](?:root|app|__next|__nuxt|q-app|svelte)["\'][^>]*>\s*</(?:div|main)>',
+    r'<(?:div|main|section)[^>]+id=["\'](?:root|app|__next|__nuxt|q-app|svelte)["\'][^>]*>'
+    r'|__NEXT_DATA__|self\.__next_f|window\.__NUXT__|window\.__INITIAL_STATE__',
     re.IGNORECASE,
 )
 _BODY_TEXT = re.compile(r"<body[^>]*>(.*?)</body>", re.IGNORECASE | re.DOTALL)
@@ -27,7 +28,7 @@ _TAGS = re.compile(r"<(script|style|noscript)[^>]*>.*?</\1>|<[^>]+>", re.IGNOREC
 def needs_rendering(html: str, *, render_mode: str = "auto", min_text_length: int | None = None) -> bool:
     """Decide whether a page should be re-fetched through a browser.
 
-    ``always`` and ``never`` short-circuit; ``auto`` looks for an empty SPA mount point or a body
+    ``always`` and ``never`` short-circuit; ``auto`` looks for an SPA mount point or a body
     whose visible text is below the configured threshold.
     """
     if render_mode == "never":
@@ -101,12 +102,13 @@ class PlaywrightRenderer:
                 return False
 
     async def render(self, url: str, user_agent: str | None = None) -> str | None:
-        """Return the DOM after network idle, or ``None`` if rendering was not possible."""
+        """Return the DOM after rendering JS, or ``None`` if rendering was not possible."""
         if not await self._ensure_browser():
             return None
 
         async with self._semaphore:
             context = None
+            page = None
             try:
                 context = await self._browser.new_context(
                     user_agent=user_agent or settings.user_agent,
@@ -123,12 +125,34 @@ class PlaywrightRenderer:
                         else route.continue_()
                     ),
                 )
-                await page.goto(url, wait_until="networkidle", timeout=self._timeout_ms)
+                try:
+                    await page.goto(url, wait_until="domcontentloaded", timeout=self._timeout_ms)
+                except Exception as goto_exc:
+                    logger.debug("goto domcontentloaded timeout/error for %s: %s", url, goto_exc)
+
+                try:
+                    await page.wait_for_load_state("load", timeout=3000)
+                except Exception:
+                    pass
+
+                # Give client-side frameworks (React/Next.js/Vue) 1s to mount DOM nodes
+                await page.wait_for_timeout(1000)
+
                 html = await page.content()
-                self.rendered_count += 1
-                return html
+                if html:
+                    self.rendered_count += 1
+                    return html
+                return None
             except Exception as exc:
-                logger.debug("Rendering failed for %s: %s", url, exc)
+                if page is not None:
+                    try:
+                        html = await page.content()
+                        if html and len(html) > 200:
+                            self.rendered_count += 1
+                            return html
+                    except Exception:
+                        pass
+                logger.warning("Rendering failed for %s: %s", url, exc)
                 return None
             finally:
                 if context is not None:

@@ -394,6 +394,11 @@ def _run_sync(website_id: int, provider: str, days: int | None) -> None:
             asyncio.run(module.sync(db, website, days=days))
         elif provider == IntegrationProvider.SEMRUSH:
             asyncio.run(semrush.sync(db, website))
+
+        # Re-score priority scores so newly imported metrics immediately reflect in ranking
+        from ...services.priority.engine import score_website
+
+        score_website(db, website)
     except Exception as exc:
         logger.exception("Background %s sync failed for website %s: %s", provider, website_id, exc)
     finally:

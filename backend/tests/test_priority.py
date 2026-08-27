@@ -589,3 +589,27 @@ class TestPriorityApi:
         ).json()["items"]
         scores = [i["priority_score"] for i in items]
         assert scores == sorted(scores, reverse=True)
+
+    def test_pages_with_equal_priority_are_sorted_by_traffic_and_impressions(
+        self, client, db, site, member_user
+    ):
+        page_a = add_page(db, site, "/zero-traffic", seo_score=60.0)
+        page_b = add_page(db, site, "/medium-traffic", seo_score=60.0)
+        page_c = add_page(db, site, "/high-traffic", seo_score=60.0)
+
+        page_a.priority_score = 100.0
+        page_b.priority_score = 100.0
+        page_c.priority_score = 100.0
+
+        add_metrics(db, site, page_b, users=10, clicks=50, impressions=1000)
+        add_metrics(db, site, page_c, users=50, clicks=150, impressions=3000)
+        db.commit()
+
+        items = client.get(
+            f"/api/websites/{site.id}/pages", headers=auth_headers(member_user)
+        ).json()["items"]
+
+        urls = [item["url"] for item in items]
+        assert urls[0] == page_c.url
+        assert urls[1] == page_b.url
+        assert urls[2] == page_a.url
