@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -116,6 +116,8 @@ def _snapshot_page(page: Page, extracted: ExtractedPage, seen_at: datetime) -> N
     page.h3_count = extracted.h3_count
     page.canonical_url = extracted.canonical_url
     page.robots_directive = extracted.meta_robots
+    page.x_robots_tag = getattr(extracted, "x_robots_tag", None)
+    page.content_type = getattr(extracted, "content_type", None)
     page.lang = extracted.lang
     page.hreflang = extracted.hreflang or None
     page.has_viewport = extracted.has_viewport
@@ -257,6 +259,12 @@ def persist_audits(
         if page is None or page.id in seen_page_ids:
             continue
         seen_page_ids.add(page.id)
+
+        db.execute(
+            update(SEOIssue)
+            .where(SEOIssue.page_id == page.id, SEOIssue.is_resolved.is_(False))
+            .values(is_resolved=True)
+        )
 
         counts = audit.counts
         seo_audit = SEOAudit(

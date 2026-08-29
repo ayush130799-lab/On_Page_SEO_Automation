@@ -37,6 +37,8 @@ class FetchResult:
     status_code: int
     html: str = ""
     content_type: str = ""
+    x_robots_tag: str | None = None
+    headers: dict[str, str] = field(default_factory=dict)
     redirect_chain: list[str] = field(default_factory=list)
     elapsed_ms: int = 0
     content_bytes: int = 0
@@ -112,13 +114,17 @@ async def fetch_url(
             continue
 
         content_type = response.headers.get("content-type", "")
+        x_robots = response.headers.get("x-robots-tag")
         html = response.text if "html" in content_type.lower() else ""
+        headers_dict = dict(response.headers)
         return FetchResult(
             url=url,
             final_url=normalize_url(str(response.url)),
             status_code=response.status_code,
             html=html,
             content_type=content_type,
+            x_robots_tag=x_robots,
+            headers=headers_dict,
             redirect_chain=[normalize_url(str(r.url)) for r in response.history],
             elapsed_ms=int((time.monotonic() - started) * 1000),
             content_bytes=len(response.content),

@@ -58,31 +58,33 @@ def check_http_status(page):
 )
 def check_robots(page):
     """`noindex` silently removes a page from search — the highest-impact single tag on a page."""
-    directive = (getattr(page, "robots_directive", None) or "").lower().strip()
+    meta_robots = (getattr(page, "robots_directive", None) or "").lower().strip()
+    x_robots = (getattr(page, "x_robots_tag", None) or "").lower().strip()
+    combined = f"{meta_robots} {x_robots}".strip()
 
-    if "noindex" in directive:
+    if "noindex" in combined:
         return fail(
             "Page carries a 'noindex' directive and will not be indexed.",
             score=20.0,
             severity=Severity.CRITICAL,
-            evidence={"robots": directive},
+            evidence={"meta_robots": meta_robots or None, "x_robots_tag": x_robots or None, "combined": combined},
         )
-    if "nofollow" in directive:
+    if "nofollow" in combined:
         return warn(
             "Page carries a 'nofollow' directive, so its links pass no signal.",
             score=60.0,
             severity=Severity.HIGH,
-            evidence={"robots": directive},
+            evidence={"meta_robots": meta_robots or None, "x_robots_tag": x_robots or None, "combined": combined},
         )
-    if "none" in directive:
+    if "none" in combined:
         return fail(
             "Page carries 'robots: none', which means noindex plus nofollow.",
             score=20.0,
             severity=Severity.CRITICAL,
-            evidence={"robots": directive},
+            evidence={"meta_robots": meta_robots or None, "x_robots_tag": x_robots or None, "combined": combined},
         )
-    if directive:
-        return ok(f"Robots directive present and permissive: {directive}.")
+    if combined:
+        return ok(f"Robots directive present and permissive: {combined}.")
     return ok("No restrictive robots directive found.")
 
 
@@ -96,12 +98,14 @@ def check_robots(page):
 )
 def check_canonical(page):
     """Without a canonical, parameterised and duplicated variants compete with each other."""
-    if getattr(page, "canonical_url", None):
+    canonical = getattr(page, "canonical_url", None)
+    if canonical:
         return ok("Canonical URL is present.")
     return warn(
         "Canonical URL is missing.",
         score=50.0,
         severity=Severity.HIGH,
+        evidence={"canonical_url": None, "reason": "No <link rel='canonical'> tag found in final parsed HTML"},
     )
 
 

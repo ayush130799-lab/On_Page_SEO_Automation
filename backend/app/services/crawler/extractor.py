@@ -62,6 +62,10 @@ class ExtractedPage:
     has_open_graph: bool = False
     has_twitter_card: bool = False
 
+    x_robots_tag: str | None = None
+    content_type: str | None = None
+    headers: dict[str, str] = field(default_factory=dict)
+
     # ── Crawl metadata (filled by the orchestrator) ─────────────────────────
     final_url: str | None = None
     redirect_chain: list[str] = field(default_factory=list)

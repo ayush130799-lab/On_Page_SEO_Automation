@@ -76,7 +76,10 @@ def check_internal_links(page):
 
     if count == 0:
         return warn(
-            "No internal links were found on this page.", score=40.0, severity=Severity.HIGH
+            "No internal links were found on this page.",
+            score=40.0,
+            severity=Severity.HIGH,
+            evidence={"internal_links": 0, "reason": "No <a> links pointing to internal domain found"},
         )
     if count < 3:
         return warn(

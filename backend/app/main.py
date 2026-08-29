@@ -90,6 +90,7 @@ def create_app() -> FastAPI:
         auth,
         crawls,
         dashboard,
+        debug,
         integrations,
         jobs,
         pages,
@@ -109,6 +110,7 @@ def create_app() -> FastAPI:
     app.include_router(recommendations.router)
     app.include_router(webhooks.router)
     app.include_router(jobs.router)
+    app.include_router(debug.router)
 
     @app.get("/", tags=["system"])
     def root() -> dict[str, str]:

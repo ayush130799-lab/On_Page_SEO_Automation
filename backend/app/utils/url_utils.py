@@ -126,16 +126,46 @@ def is_same_domain(url: str, base_domain: str) -> bool:
     return registrable_domain(domain_of(url)) == registrable_domain(base_domain)
 
 
-def is_probably_page(url: str) -> bool:
-    """False for URLs whose extension or path marks them as an asset, auth, or non-page endpoint."""
-    path = urlparse(url).path.lower()
+def has_recursive_path_loop(url: str) -> bool:
+    """True if URL path contains repeating segments or embedded hostnames (e.g. /blog/blog/ or /path/www.site.com/)."""
+    parsed = urlparse(url)
+    path = parsed.path or "/"
+    segments = [s.lower() for s in path.split("/") if s]
+    if not segments:
+        return False
 
+    # Check for embedded hostname inside path
+    for seg in segments:
+        if "www." in seg or seg.endswith((".com", ".org", ".net", ".io", ".co", ".in")):
+            return True
+
+    # Check for segment repetition (e.g., /blog/blog/ or /a/b/a/b/)
+    counts = {}
+    for i, seg in enumerate(segments):
+        counts[seg] = counts.get(seg, 0) + 1
+        if counts[seg] > 1 and seg not in {"page", "p", "category", "tag", "index", "en", "us", "uk", "de", "fr"}:
+            return True
+        if i > 0 and seg == segments[i - 1]:
+            return True
+    return False
+
+
+def is_probably_page(url: str) -> bool:
+    """False for URLs whose extension or path marks them as an asset, auth, non-page endpoint, or loop."""
+    parsed = urlparse(url)
+    path = parsed.path.lower()
+
+    if has_recursive_path_loop(url):
+        return False
+
+    # Check path segments
+    path_segments = [s for s in path.split("/") if s]
     if any(
-        seg in path
-        for seg in (
-            "/wp-json/", "/wp-admin/", "/feed/", "/cdn-cgi/", "/api/",
-            "/login", "/signup", "/register", "/logout", "/auth/", "/cart", "/checkout"
+        seg in (
+            "wp-json", "wp-admin", "feed", "cdn-cgi", "api", "xmlrpc.php",
+            "login", "signup", "register", "logout", "auth", "cart", "checkout"
         )
+        for seg in path_segments
     ):
         return False
 
@@ -180,6 +210,11 @@ def absolute_url(base: str, href: str) -> str | None:
     href = href.strip()
     if not href or href.startswith(("#", "mailto:", "tel:", "javascript:", "data:", "sms:")):
         return None
+
+    # Handle malformed hrefs like "www.domain.com/foo" missing scheme
+    if href.lower().startswith("www."):
+        href = f"https://{href}"
+
     try:
         url = normalize_url(urljoin(base, href))
     except ValueError:
@@ -197,3 +232,4 @@ def matches_any_pattern(url: str, patterns: list[str] | None) -> bool:
         if re.match(regex, path) or re.match(regex, url):
             return True
     return False
+

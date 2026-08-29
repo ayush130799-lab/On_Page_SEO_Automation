@@ -70,6 +70,8 @@ class Page(TimestampMixin, Base):
     h3_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     canonical_url: Mapped[str | None] = mapped_column(String(2048))
     robots_directive: Mapped[str | None] = mapped_column(Text)
+    x_robots_tag: Mapped[str | None] = mapped_column(Text)
+    content_type: Mapped[str | None] = mapped_column(String(255))
     lang: Mapped[str | None] = mapped_column(String(20))
     hreflang: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONColumn)
     has_viewport: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

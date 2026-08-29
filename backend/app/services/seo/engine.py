@@ -9,7 +9,7 @@ from typing import Any, Iterable, Sequence
 
 from ...models.enums import Severity
 from . import rules  # noqa: F401  (importing registers every rule)
-from .registry import RuleResult, registry
+from .registry import PASS, RuleResult, registry
 from .scoring import (
     calculate_score,
     determine_category,
@@ -120,7 +120,27 @@ def annotate_site(pages: Sequence[Any]) -> None:
 def audit_page(page: Any, weights: dict[str, float] | None = None) -> PageAuditResult:
     """Run every registered rule against one page and score the outcome."""
     resolved = weights if weights is not None else resolve_weights()
-    results = [rule_obj.evaluate(page) for rule_obj in registry.all()]
+    results = []
+    
+    status_code = getattr(page, "status_code", 200) or 200
+    is_200 = status_code == 200
+
+    for rule_obj in registry.all():
+        # Non-200 pages (404s, 500s, 3xx redirects) should only be evaluated by status and redirect rules
+        if not is_200 and rule_obj.id not in {"http_status", "redirect_chain"}:
+            results.append(
+                RuleResult(
+                    rule_id=rule_obj.id,
+                    check_type=rule_obj.check_type,
+                    category=rule_obj.category,
+                    title=rule_obj.title,
+                    status=PASS,
+                    score=100.0,
+                    details=f"Check skipped for HTTP {status_code} page.",
+                )
+            )
+        else:
+            results.append(rule_obj.evaluate(page))
 
     score = calculate_score(results, resolved)
     highest = determine_highest_severity(results)
@@ -134,6 +154,7 @@ def audit_page(page: Any, weights: dict[str, float] | None = None) -> PageAuditR
         results=results,
         weights=resolved,
     )
+
 
 
 def audit_site(

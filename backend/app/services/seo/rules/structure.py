@@ -32,7 +32,11 @@ def check_h1(page):
     headings = _h1_texts(page)
 
     if not headings:
-        return fail("No H1 heading found.", severity=Severity.HIGH)
+        return fail(
+            "No H1 heading found.",
+            severity=Severity.HIGH,
+            evidence={"h1_count": 0, "h1": None, "reason": "No <h1> element found in final HTML DOM"},
+        )
     if len(headings) > 1:
         return warn(
             f"{len(headings)} H1 headings found; keep one and demote the rest to H2.",
@@ -58,7 +62,10 @@ def check_heading_structure(page):
 
     if h2 == 0 and h3 == 0:
         return warn(
-            "No H2 or H3 subheadings were found.", score=60.0, severity=Severity.LOW
+            "No H2 or H3 subheadings were found.",
+            score=60.0,
+            severity=Severity.LOW,
+            evidence={"h2_count": 0, "h3_count": 0, "reason": "No <h2> or <h3> elements found"},
         )
     if h2 == 0 and h3 > 0:
         return warn(

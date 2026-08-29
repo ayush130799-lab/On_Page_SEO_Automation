@@ -27,20 +27,40 @@ def check_title(page):
     title = (page.title or "").strip()
 
     if not title:
-        return fail("Title tag is missing.", severity=Severity.HIGH)
+        return fail(
+            "Title tag is missing.",
+            severity=Severity.HIGH,
+            evidence={
+                "title": None,
+                "length": 0,
+                "reason": "No <title> tag found in final parsed HTML",
+                "min_allowed": TITLE_MIN,
+                "max_allowed": TITLE_MAX,
+            },
+        )
     if len(title) < TITLE_MIN:
         return warn(
             f"Title is short ({len(title)} characters).",
             score=60.0,
             severity=Severity.MEDIUM,
-            evidence={"title": title, "length": len(title)},
+            evidence={
+                "title": title,
+                "length": len(title),
+                "min_allowed": TITLE_MIN,
+                "max_allowed": TITLE_MAX,
+            },
         )
     if len(title) > TITLE_MAX:
         return warn(
             f"Title is long ({len(title)} characters) and will be truncated in results.",
             score=60.0,
             severity=Severity.MEDIUM,
-            evidence={"title": title, "length": len(title)},
+            evidence={
+                "title": title,
+                "length": len(title),
+                "min_allowed": TITLE_MIN,
+                "max_allowed": TITLE_MAX,
+            },
         )
     return ok(f"Title length is {len(title)} characters.")
 
@@ -58,20 +78,40 @@ def check_meta_description(page):
     description = (page.meta_description or "").strip()
 
     if not description:
-        return fail("Meta description is missing.", severity=Severity.HIGH)
+        return fail(
+            "Meta description is missing.",
+            severity=Severity.HIGH,
+            evidence={
+                "meta_description": None,
+                "length": 0,
+                "reason": "No <meta name='description'> tag found in final parsed HTML",
+                "min_allowed": META_MIN,
+                "max_allowed": META_MAX,
+            },
+        )
     if len(description) < META_MIN:
         return warn(
             f"Meta description is short ({len(description)} characters).",
             score=60.0,
             severity=Severity.MEDIUM,
-            evidence={"length": len(description)},
+            evidence={
+                "meta_description": description,
+                "length": len(description),
+                "min_allowed": META_MIN,
+                "max_allowed": META_MAX,
+            },
         )
     if len(description) > META_MAX:
         return warn(
             f"Meta description is long ({len(description)} characters) and will be truncated.",
             score=60.0,
             severity=Severity.MEDIUM,
-            evidence={"length": len(description)},
+            evidence={
+                "meta_description": description,
+                "length": len(description),
+                "min_allowed": META_MIN,
+                "max_allowed": META_MAX,
+            },
         )
     return ok(f"Meta description length is {len(description)} characters.")
 
@@ -89,7 +129,10 @@ def check_open_graph(page):
     if getattr(page, "has_open_graph", False):
         return ok("Open Graph metadata detected.")
     return warn(
-        "Open Graph metadata is missing.", score=70.0, severity=Severity.LOW
+        "Open Graph metadata is missing.",
+        score=70.0,
+        severity=Severity.LOW,
+        evidence={"has_open_graph": False, "reason": "Missing og:title or og:description tags"},
     )
 
 
@@ -109,4 +152,5 @@ def check_viewport(page):
         "Viewport meta tag is missing, so the page will not adapt to mobile screens.",
         score=50.0,
         severity=Severity.MEDIUM,
+        evidence={"has_viewport": False, "reason": "Missing meta name='viewport' tag"},
     )

@@ -87,6 +87,7 @@ async def run_report(
     limit: int = ROW_LIMIT,
 ) -> dict[str, Any]:
     """One GA4 ``runReport`` call."""
+    clean_property_id = property_id.strip().removeprefix("properties/")
     body = {
         "dateRanges": [
             {"startDate": start_date.isoformat(), "endDate": end_date.isoformat()}
@@ -97,11 +98,18 @@ async def run_report(
         "offset": offset,
         "keepEmptyRows": False,
     }
+    logger.info(
+        "Requesting GA4 report for property %s from %s to %s (offset %d)",
+        clean_property_id,
+        start_date,
+        end_date,
+        offset,
+    )
     async with integration_client() as client:
         response = await request_with_retry(
             client,
             "POST",
-            f"{DATA_API}/properties/{property_id}:runReport",
+            f"{DATA_API}/properties/{clean_property_id}:runReport",
             provider="Google Analytics",
             headers={
                 "Authorization": f"Bearer {access_token}",
@@ -110,6 +118,7 @@ async def run_report(
             json=body,
         )
     return response.json()
+
 
 
 def _parse_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -226,7 +235,7 @@ async def sync(
 ) -> dict[str, Any]:
     """Pull GA4 data for a website and upsert it into ``ga4_metrics``."""
     integration = require_integration(db, website.id, IntegrationProvider.GA4)
-    property_id = (integration.config or {}).get("property_id")
+    property_id = (integration.config or {}).get("property_id") or integration.account_id
     if not property_id:
         raise IntegrationError(
             "No GA4 property is selected for this website.",
@@ -237,7 +246,7 @@ async def sync(
     try:
         access_token = await get_access_token(db, integration)
 
-        window = days or settings.integration_sync_window_days
+        window = days or settings.integration_sync_backfill_days
         end_date = end or (date.today() - timedelta(days=1))
         start_date = end_date - timedelta(days=window - 1)
 

@@ -244,12 +244,15 @@ def get_page(page_id: int, user: CurrentUser, db: DbSession, history_days: int =
         raise NotFoundError(f"Page {page_id} was not found.")
     get_website_for_read(page.website_id, user, db)
 
-    issues = db.scalars(
+    deduped_issues: dict[str, SEOIssue] = {}
+    for issue in db.scalars(
         select(SEOIssue)
         .where(SEOIssue.page_id == page.id, SEOIssue.is_resolved.is_(False))
-        .order_by(SEOIssue.id.asc())
-    ).all()
-    issues = sorted(issues, key=lambda i: -severity_rank(i.severity))
+        .order_by(SEOIssue.id.desc())
+    ).all():
+        if issue.rule_id not in deduped_issues:
+            deduped_issues[issue.rule_id] = issue
+    issues = sorted(deduped_issues.values(), key=lambda i: -severity_rank(i.severity))
 
     latest_audit = db.scalar(
         select(SEOAudit).where(SEOAudit.page_id == page.id).order_by(SEOAudit.id.desc()).limit(1)

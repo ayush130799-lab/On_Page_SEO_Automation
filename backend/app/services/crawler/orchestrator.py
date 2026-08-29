@@ -248,6 +248,9 @@ class Crawler:
         page.was_rendered = rendered
         page.response_time_ms = result.elapsed_ms
         page.content_bytes = result.content_bytes
+        page.x_robots_tag = result.x_robots_tag
+        page.content_type = result.content_type
+        page.headers = result.headers
 
         async with self._lock:
             self.pages.append(page)

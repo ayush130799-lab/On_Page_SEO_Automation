@@ -26,13 +26,17 @@ def check_structured_data(page):
             "A JSON-LD block on this page is not valid JSON and will be ignored by search engines.",
             score=30.0,
             severity=Severity.MEDIUM,
+            evidence={"structured_data_invalid": True, "reason": "JSON-LD script block syntax error"},
         )
     if getattr(page, "has_structured_data", False):
         types = getattr(page, "structured_data_types", None) or []
         label = ", ".join(types[:5]) if types else "present"
         return ok(f"Structured data detected ({label}).")
     return warn(
-        "No Schema.org structured data detected.", score=70.0, severity=Severity.LOW
+        "No Schema.org structured data detected.",
+        score=70.0,
+        severity=Severity.LOW,
+        evidence={"has_structured_data": False, "reason": "No Schema.org JSON-LD or Microdata tags found"},
     )
 
 

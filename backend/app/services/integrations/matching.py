@@ -90,14 +90,29 @@ class PageResolver:
         }
 
 
+from urllib.parse import unquote
+
+
 def _normalise_path(path: str) -> str:
-    """Collapse the trailing-slash and case differences providers disagree about."""
+    """Collapse query strings, trailing-slash, encoding, and case differences providers disagree about."""
     if not path:
         return "/"
-    path = path.split("#", 1)[0]
+    # Strip query and fragment
+    path = path.split("?", 1)[0].split("#", 1)[0]
+    # Unquote URL encoding (%20, %2F)
+    try:
+        path = unquote(path)
+    except Exception:
+        pass
+
+    path = path.strip()
+    if not path.startswith("/"):
+        path = "/" + path
+
     if len(path) > 1 and path.endswith("/"):
         path = path.rstrip("/") or "/"
     return path.lower()
+
 
 
 def site_url_variants(website_url: str) -> list[str]:

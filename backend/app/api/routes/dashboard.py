@@ -119,15 +119,34 @@ def portfolio_overview(user: CurrentUser, db: DbSession, window_days: int | None
         .where(GA4Metric.website_id.in_(website_ids or [-1]), GA4Metric.date >= since)
         .group_by(GA4Metric.website_id)
     ).all()
-    traffic_by_site = {
-        row[0]: {
-            "users": int(row[1] or 0),
-            "sessions": int(row[2] or 0),
-            "conversions": float(row[3] or 0),
-            "revenue": float(row[4] or 0),
-        }
-        for row in traffic_rows
-    }
+    traffic_by_site = {}
+    for website_id in website_ids:
+        ga4_status = integrations.get(website_id, {}).get(IntegrationProvider.GA4, "not_connected")
+        row = next((r for r in traffic_rows if r[0] == website_id), None)
+        if row and (row[1] is not None or row[2] is not None):
+            traffic_by_site[website_id] = {
+                "status": ga4_status,
+                "users": int(row[1] or 0),
+                "sessions": int(row[2] or 0),
+                "conversions": float(row[3] or 0),
+                "revenue": float(row[4] or 0),
+            }
+        elif ga4_status == "connected":
+            traffic_by_site[website_id] = {
+                "status": "connected",
+                "users": 0,
+                "sessions": 0,
+                "conversions": 0.0,
+                "revenue": 0.0,
+            }
+        else:
+            traffic_by_site[website_id] = {
+                "status": ga4_status,
+                "users": None,
+                "sessions": None,
+                "conversions": None,
+                "revenue": None,
+            }
 
     search_rows = db.execute(
         select(
@@ -183,7 +202,8 @@ def portfolio_overview(user: CurrentUser, db: DbSession, window_days: int | None
                 "last_scored_at": website.last_scored_at,
                 "integrations": integrations.get(website.id, {}),
                 "traffic": traffic_by_site.get(
-                    website.id, {"users": 0, "sessions": 0, "conversions": 0.0, "revenue": 0.0}
+                    website.id,
+                    {"status": "not_connected", "users": None, "sessions": None, "conversions": None, "revenue": None},
                 ),
                 "search": search_by_site.get(website.id, {"clicks": 0, "impressions": 0}),
                 "active_crawl": active_runs.get(website.id),
@@ -200,12 +220,13 @@ def portfolio_overview(user: CurrentUser, db: DbSession, window_days: int | None
         "critical_issues": sum(i["critical_issues"] for i in items),
         "high_priority_pages": sum(i["high_priority_pages"] for i in items),
         "total_issues": sum(i["total_issues"] for i in items),
-        "users": sum(i["traffic"]["users"] for i in items),
-        "conversions": sum(i["traffic"]["conversions"] for i in items),
-        "revenue": sum(i["traffic"]["revenue"] for i in items),
+        "users": sum(i["traffic"]["users"] for i in items if i["traffic"]["users"] is not None),
+        "conversions": sum(i["traffic"]["conversions"] for i in items if i["traffic"]["conversions"] is not None),
+        "revenue": sum(i["traffic"]["revenue"] for i in items if i["traffic"]["revenue"] is not None),
         "clicks": sum(i["search"]["clicks"] for i in items),
         "impressions": sum(i["search"]["impressions"] for i in items),
     }
+
     scored = [i["average_seo_score"] for i in items if i["average_seo_score"] is not None]
     totals["average_seo_score"] = round(sum(scored) / len(scored), 1) if scored else None
 
@@ -291,14 +312,64 @@ def website_overview(
     top_rules = list(rule_totals.values())
     top_rules.sort(key=lambda r: (-severity_rank(r["severity"]), -r["page_count"]))
 
-    traffic = db.execute(
+    ga4_integ = db.scalar(
+        select(Integration).where(
+            Integration.website_id == website.id, Integration.provider == IntegrationProvider.GA4
+        )
+    )
+    ga4_status = ga4_integ.status if ga4_integ else "not_connected"
+    ga4_error = ga4_integ.last_error if ga4_integ else None
+
+    raw_traffic = db.execute(
         select(
-            func.coalesce(func.sum(GA4Metric.users), 0),
-            func.coalesce(func.sum(GA4Metric.sessions), 0),
-            func.coalesce(func.sum(GA4Metric.conversions), 0.0),
-            func.coalesce(func.sum(GA4Metric.revenue), 0.0),
+            func.sum(GA4Metric.users),
+            func.sum(GA4Metric.sessions),
+            func.sum(GA4Metric.conversions),
+            func.sum(GA4Metric.revenue),
         ).where(GA4Metric.website_id == website.id, GA4Metric.date >= since)
     ).one()
+
+    if ga4_status == "error":
+        traffic_payload = {
+            "status": "error",
+            "has_data": False,
+            "users": None,
+            "sessions": None,
+            "conversions": None,
+            "revenue": None,
+            "error": ga4_error,
+        }
+    elif ga4_status == "not_connected":
+        traffic_payload = {
+            "status": "not_connected",
+            "has_data": False,
+            "users": None,
+            "sessions": None,
+            "conversions": None,
+            "revenue": None,
+            "error": None,
+        }
+    elif raw_traffic[0] is not None or raw_traffic[1] is not None:
+        traffic_payload = {
+            "status": "connected",
+            "has_data": True,
+            "users": int(raw_traffic[0] or 0),
+            "sessions": int(raw_traffic[1] or 0),
+            "conversions": float(raw_traffic[2] or 0.0),
+            "revenue": float(raw_traffic[3] or 0.0),
+            "error": None,
+        }
+    else:
+        traffic_payload = {
+            "status": "connected",
+            "has_data": False,
+            "users": 0,
+            "sessions": 0,
+            "conversions": 0.0,
+            "revenue": 0.0,
+            "error": None,
+        }
+
     search = db.execute(
         select(
             func.coalesce(func.sum(GSCMetric.clicks), 0),
@@ -372,12 +443,7 @@ def website_overview(
             "issues_by_severity": issues_by_severity,
         },
         "top_issues": top_rules[:10],
-        "traffic": {
-            "users": int(traffic[0]),
-            "sessions": int(traffic[1]),
-            "conversions": float(traffic[2]),
-            "revenue": float(traffic[3]),
-        },
+        "traffic": traffic_payload,
         "search": {
             "clicks": int(search[0]),
             "impressions": int(search[1]),
