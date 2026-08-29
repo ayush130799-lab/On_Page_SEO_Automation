@@ -102,6 +102,7 @@ function WebsiteDashboard() {
     try {
       const data = await api.dashboard.website(websiteId);
       setOverview(data);
+      setError("");
       const running = data.recent_crawls.find(
         (run) => run.status === "running" || run.status === "queued",
       );
@@ -127,6 +128,7 @@ function WebsiteDashboard() {
       });
       setPages(result.items);
       setTotal(result.total);
+      setError("");
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "Could not load pages.");
     } finally {

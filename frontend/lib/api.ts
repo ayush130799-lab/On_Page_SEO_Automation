@@ -125,29 +125,32 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     if (token) headers.Authorization = `Bearer ${token}`;
   }
 
-  let response: Response;
-  try {
-    response = await fetch(url.toString(), {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-  } catch {
-    // Retry once after 2.5s in case Render backend is waking up from free tier sleep
+  let response: Response | undefined;
+  const backoffs = [2000, 4000, 6000];
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= backoffs.length; attempt++) {
     try {
-      await new Promise((resolve) => setTimeout(resolve, 2500));
       response = await fetch(url.toString(), {
         method,
         headers,
         body: body === undefined ? undefined : JSON.stringify(body),
       });
-    } catch {
-      throw new ApiError(
-        0,
-        "network_error",
-        `Could not reach the API at ${API_BASE}. Is the backend running?`,
-      );
+      break; // Request succeeded
+    } catch (caught) {
+      lastError = caught;
+      if (attempt < backoffs.length) {
+        await new Promise((resolve) => setTimeout(resolve, backoffs[attempt]));
+      }
     }
+  }
+
+  if (!response) {
+    throw new ApiError(
+      0,
+      "network_error",
+      `Could not reach the API at ${API_BASE}. Is the backend running?`,
+    );
   }
 
   if (response.status === 401 && retryOnAuthFailure && !skipAuth) {
