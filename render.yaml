@@ -30,6 +30,10 @@ services:
       - key: SECRET_KEY
         generateValue: true
       # AI provider — required for the AI recommendation pipeline to run at all.
+      - key: GROQ_MODEL
+        value: "llama-3.3-70b-versatile"
+      - key: ALLOW_REGISTRATION
+        value: "true"
       - key: LLM_PROVIDER
         sync: false
       - key: GEMINI_API_KEY
