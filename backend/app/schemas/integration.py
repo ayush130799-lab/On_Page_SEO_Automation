@@ -92,6 +92,15 @@ class GitHubConnectRequest(BaseModel):
         description="Shared secret configured on the GitHub webhook.",
     )
     framework: str | None = Field(default=None, max_length=50)
+    #: A personal or fine-grained access token with `repo` (or, for fine-grained tokens, Pull
+    #: requests: read/write + Commit statuses: write) scope. Optional — without it, push-triggered
+    #: re-crawls still work; only pull-request diff analysis, PR comments, and the deployment
+    #: gate need it.
+    access_token: str | None = Field(default=None, min_length=8, max_length=255)
+    #: off (never touch commit status) | warn (always post a status, never fails it) |
+    #: block (fails the status on high/critical risk — only meaningful if branch protection is
+    #: configured to require this check).
+    deployment_gate: str = Field(default="off", pattern="^(off|warn|block)$")
 
 
 class SyncRequest(BaseModel):

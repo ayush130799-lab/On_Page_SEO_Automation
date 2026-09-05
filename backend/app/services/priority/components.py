@@ -190,3 +190,57 @@ def severity_band(score: float, distribution: Sequence[float]) -> str:
     if score >= cutoff(0.50):
         return "P2"
     return "P3"
+
+
+def compute_search_impact_score(metrics: dict[str, Any] | None) -> float:
+    """Calculate 0-100 search performance impact score from GSC/Semrush metrics."""
+    if not metrics or not any(metrics.get(k) for k in ("clicks", "impressions", "position")):
+        return 50.0
+
+    impressions = metrics.get("impressions", 0) or 0
+    ctr = metrics.get("ctr")
+    position = metrics.get("position")
+
+    # CTR opportunity: impressions exist but CTR lags expected
+    ctr_gap = 0.0
+    if impressions >= 50 and ctr is not None:
+        expected = _expected_ctr(position)
+        if expected and ctr < expected:
+            ctr_gap = min(1.0, (expected - ctr) / expected)
+
+    # Striking distance ranking position (4-20 has the highest immediate upside)
+    pos_score = 0.3
+    if position and position > 0:
+        if 4 <= position <= 20:
+            pos_score = 1.0 - (position - 4) / 25.0
+        elif position < 4:
+            pos_score = 0.5
+        else:
+            pos_score = max(0.1, 1.0 - position / 100.0)
+
+    volume_score = min(1.0, math.log1p(impressions) / math.log1p(10000))
+    search_impact = (0.45 * ctr_gap + 0.35 * pos_score + 0.20 * volume_score) * 100.0
+    return round(min(100.0, max(10.0, search_impact)), 1)
+
+
+def compute_user_activity_score(metrics: dict[str, Any] | None) -> float:
+    """Calculate 0-100 user activity and conversion impact score from GA4 analytics."""
+    if not metrics or not any(metrics.get(k) for k in ("users", "sessions", "conversions", "revenue")):
+        return 50.0
+
+    sessions = metrics.get("sessions", 0) or 0
+    conversions = metrics.get("conversions", 0) or 0
+    revenue = metrics.get("revenue", 0) or 0
+    engagement_rate = metrics.get("engagement_rate")
+
+    traffic_score = min(1.0, math.log1p(sessions) / math.log1p(5000))
+    conv_score = min(1.0, math.log1p(conversions) / math.log1p(100))
+    rev_score = min(1.0, math.log1p(revenue) / math.log1p(1000))
+
+    eng_score = 0.5
+    if engagement_rate is not None:
+        eng_score = min(1.0, max(0.0, engagement_rate))
+
+    user_impact = (0.35 * traffic_score + 0.35 * conv_score + 0.15 * rev_score + 0.15 * eng_score) * 100.0
+    return round(min(100.0, max(10.0, user_impact)), 1)
+

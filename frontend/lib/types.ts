@@ -46,8 +46,17 @@ export interface IntegrationSummary {
   provider: IntegrationProvider;
   status: IntegrationStatus;
   account_label?: string | null;
+  connected_at?: string | null;
   last_sync_at?: string | null;
   last_error?: string | null;
+  config?: {
+    repo?: string;
+    branch?: string;
+    webhook_url?: string;
+    deployment_gate?: string;
+    has_access_token?: boolean;
+    [key: string]: unknown;
+  } | null;
 }
 
 export interface Website {
@@ -227,6 +236,9 @@ export interface PageListItem {
   ctr: number | null;
   position: number | null;
   top_issues: string[];
+  // Phase 2: Search Intent
+  search_intent?: string | null;
+  intent_mismatch?: boolean;
 }
 
 export interface IssueSummary {
@@ -292,6 +304,10 @@ export interface AiFinding {
   priority: "critical" | "high" | "medium" | "low";
   effort: "trivial" | "small" | "medium" | "large";
   confidence: number;
+  search_impact_score?: number | null;
+  user_activity_score?: number | null;
+  impact_score?: number | null;
+  reason?: string | null;
 }
 
 export interface AiSuggestedChange {
@@ -306,6 +322,10 @@ export interface AiRecommendationPayload {
   search_intent: string | null;
   content_quality_score: number;
   topic_coverage_score: number;
+  search_impact_score?: number | null;
+  user_activity_score?: number | null;
+  impact_score?: number | null;
+  reason?: string | null;
   findings: AiFinding[];
   suggested_changes: AiSuggestedChange[];
   expected_impact: string | null;
@@ -374,6 +394,26 @@ export interface GithubChange {
   created_at: string;
 }
 
+export interface GitHubEventItem {
+  id: number;
+  delivery_id: string;
+  event_type: string;
+  repository: string | null;
+  branch: string | null;
+  after_sha: string | null;
+  pusher: string | null;
+  commit_count: number;
+  commit_messages: string[];
+  changed_file_count: number;
+  changed_files: string[];
+  affected_urls: string[];
+  action_taken: string | null;
+  action_reason: string | null;
+  crawl_run_id?: number | null;
+  created_at: string;
+  processed_at?: string | null;
+}
+
 export interface PageDetailResponse {
   page: PageDetail;
   issues: IssueSummary[];
@@ -387,6 +427,16 @@ export interface PageDetailResponse {
     model: string;
     status: string;
     summary: string | null;
+    search_intent?: string | null;
+    priority?: string | null;
+    confidence?: number | null;
+    expected_impact?: string | null;
+    search_impact_score?: number | null;
+    user_activity_score?: number | null;
+    impact_score?: number | null;
+    reason?: string | null;
+    suggested_title?: string | null;
+    suggested_meta_description?: string | null;
     payload: AiRecommendationPayload | null;
     analysed_at: string | null;
   } | null;
@@ -421,6 +471,10 @@ export interface RecommendationListItem {
   priority: string | null;
   confidence: number | null;
   expected_impact: string | null;
+  search_impact_score?: number | null;
+  user_activity_score?: number | null;
+  impact_score?: number | null;
+  reason?: string | null;
   suggested_title: string | null;
   suggested_meta_description: string | null;
   finding_count: number;
@@ -431,4 +485,164 @@ export interface RecommendationListItem {
 
 export interface ApiErrorBody {
   error: { code: string; message: string; details?: unknown };
+}
+
+// ── Roadmap & Planning (Phase 3) ───────────────────────────────────────────
+
+export interface RoadmapTask {
+  action?: string;
+  title?: string;
+  page_id?: number;
+  url?: string;
+  priority?: string;
+  priority_level?: string;
+  rationale?: string;
+  reason?: string;
+  expected_outcome?: string;
+  effort?: string;
+  overall_priority?: number;
+  search_impact_score?: number;
+  user_activity_score?: number;
+  recommendation_type?: string;
+  target_keywords?: string[];
+}
+
+export interface RoadmapWeek {
+  week: number;
+  label?: string;
+  title?: string;
+  focus?: string;
+  items?: RoadmapTask[];
+  tasks?: RoadmapTask[];
+}
+
+export interface PriorityMatrixRow {
+  page_id: number;
+  url: string;
+  path: string;
+  seo_opportunity: number;
+  user_activity_opportunity: number;
+  business_value: number;
+  technical_severity: number;
+  keyword_opportunity: number;
+  overall_priority: number;
+  priority_level: string;
+  top_recommendation: string;
+  top_recommendation_reason: string;
+}
+
+export interface RoadmapResponse {
+  generated: boolean;
+  message?: string;
+  id?: number;
+  website_id?: number;
+  generated_at?: string | null;
+  overview?: {
+    overall_seo_opportunity: number | null;
+    organic_growth_opportunity: string | number;
+    user_activity_opportunity: string | number;
+    priority_counts: {
+      P0: number;
+      P1: number;
+      P2: number;
+      P3: number;
+    };
+  };
+  weeks?: RoadmapWeek[];
+  priority_matrix?: PriorityMatrixRow[];
+}
+
+// ── Competitor Analysis & Live SERP (Phase 4) ───────────────────────────────
+
+export interface CompetitorResultItem {
+  position: number;
+  url: string;
+  domain: string;
+  title: string | null;
+  snippet: string | null;
+  fetch_status: string;
+  fetch_error?: string | null;
+  word_count: number;
+  h1_text?: string | null;
+  h1_count: number;
+  h2_count: number;
+  h3_count: number;
+  headings: string[];
+}
+
+export interface CompetitorAnalysisResponse {
+  available: boolean;
+  reason?: string;
+  id?: number;
+  keyword?: string;
+  page_id?: number | null;
+  analysed_at?: string | null;
+  fetched_count?: number;
+  failed_count?: number;
+  paa_questions?: (string | { question?: string; snippet?: string | null })[];
+  related_searches?: string[];
+  content_gap?: {
+    this_page_word_count: number | null;
+    competitor_median_word_count: number | null;
+    competitor_avg_h2_count: number | null;
+    missing_subtopics: string[];
+  };
+  competitors?: CompetitorResultItem[];
+}
+
+// ── Post-Deployment Experiments (AI Feedback Loop) ──────────────────────────
+
+export interface ExperimentMetricSet {
+  impressions: number | null;
+  clicks: number | null;
+  ctr: number | null;
+  position: number | null;
+  sessions: number | null;
+  conversions: number | null;
+}
+
+export interface ExperimentCheckpoint {
+  checkpoint_day: number;
+  due_at: string | null;
+  measured_at: string | null;
+  baseline: ExperimentMetricSet;
+  actual: ExperimentMetricSet;
+  deltas: {
+    impressions_pct: number | null;
+    clicks_pct: number | null;
+    ctr_pct: number | null;
+    position: number | null;
+    sessions_pct: number | null;
+    conversions_pct: number | null;
+  };
+  actual_impact: string | null;
+  prediction_matched: boolean | null;
+}
+
+export interface ExperimentListItem {
+  id: number;
+  pull_request_id: number | null;
+  page_id: number | null;
+  affected_url: string | null;
+  predicted_impact: string | null;
+  predicted_positive_confidence: number | null;
+  predicted_negative_confidence: number | null;
+  predicted_risk_level: string | null;
+  deployed_at: string | null;
+  status: string;
+}
+
+export interface ExperimentDetail extends ExperimentListItem {
+  checkpoints: ExperimentCheckpoint[];
+}
+
+export interface ExperimentAccuracyReport {
+  total_measured: number;
+  insufficient_data: number;
+  matched: number;
+  accuracy_rate: number | null;
+  sample_size_sufficient: boolean;
+  by_predicted_impact: Record<string, unknown>;
+  by_risk_level: Record<string, unknown>;
+  weight_adjustment_suggestions: { factor: string; direction: string; reason: string }[];
 }

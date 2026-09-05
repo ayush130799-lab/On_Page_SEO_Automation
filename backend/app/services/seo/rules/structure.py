@@ -106,3 +106,59 @@ def check_content(page):
             evidence={"characters": length, "words": words},
         )
     return ok(f"Readable content length is {length} characters ({words} words).")
+
+
+@rule(
+    id="empty_headings",
+    check_type="empty_headings",
+    category=IssueCategory.HEADINGS,
+    weight=1.0,
+    title="Empty headings",
+    fix_hint="Remove heading tags used purely for spacing, or give them real text.",
+)
+def check_empty_headings(page):
+    """A heading with no text conveys structure to a crawler that a user never sees."""
+    empty = getattr(page, "empty_heading_count", 0) or 0
+    if empty == 0:
+        return ok("No empty headings.")
+    return warn(
+        f"{empty} heading element(s) contain no text.",
+        score=75.0,
+        severity=Severity.LOW,
+        evidence={"empty_heading_count": empty},
+    )
+
+
+@rule(
+    id="heading_depth",
+    check_type="heading_depth",
+    category=IssueCategory.HEADINGS,
+    weight=1.0,
+    title="Heading hierarchy depth",
+    fix_hint="Introduce heading levels in order; do not jump from H2 straight to H4.",
+)
+def check_heading_depth(page):
+    """A skipped level breaks the document outline assistive technology and crawlers rely on."""
+    levels = [
+        getattr(page, f"h{i}_count", 0) or 0 for i in range(1, 7)
+    ]
+    if not any(levels):
+        return ok("No headings to assess.")
+
+    present = [i + 1 for i, count in enumerate(levels) if count]
+    skipped = [
+        level
+        for level in range(min(present), max(present) + 1)
+        if level not in present
+    ]
+    if skipped:
+        return warn(
+            "Heading levels skipped: " + ", ".join(f"H{level}" for level in skipped) + ".",
+            score=80.0,
+            severity=Severity.LOW,
+            evidence={
+                "levels_present": [f"H{level}" for level in present],
+                "levels_skipped": [f"H{level}" for level in skipped],
+            },
+        )
+    return ok("Heading hierarchy is contiguous.")

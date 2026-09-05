@@ -23,9 +23,10 @@ function NewWebsiteForm() {
     github_repo: "",
     github_branch: "main",
     github_framework: "",
-    max_pages: "",
     render_mode: "auto",
     exclude_patterns: "",
+    page_cap_enabled: false,
+    max_pages: "",
   });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -119,22 +120,7 @@ function NewWebsiteForm() {
 
         <Card title="Crawl settings">
           <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label className="label" htmlFor="max-pages">
-                Page limit
-              </label>
-              <input
-                id="max-pages"
-                type="number"
-                min={1}
-                className="input"
-                placeholder="Default (5000)"
-                value={form.max_pages}
-                onChange={(event) => update("max_pages", event.target.value)}
-              />
-            </div>
-
-            <div>
+            <div className="sm:col-span-2">
               <label className="label" htmlFor="render-mode">
                 JavaScript rendering
               </label>
@@ -144,10 +130,42 @@ function NewWebsiteForm() {
                 value={form.render_mode}
                 onChange={(event) => update("render_mode", event.target.value)}
               >
-                <option value="auto">Auto — render only thin pages</option>
-                <option value="always">Always render (slow)</option>
-                <option value="never">Never render (fastest)</option>
+                <option value="auto">Auto — render only thin / SPA pages</option>
+                <option value="always">Always render (Full Chromium — best accuracy)</option>
+                <option value="never">Never render (fastest, static HTML only)</option>
               </select>
+              <p className="mt-1.5 text-xs text-slate-500">
+                Use &quot;Always render&quot; for React / Next.js / Vue sites to get unique
+                per-page data instead of the static shell.
+              </p>
+            </div>
+
+            <div className="sm:col-span-2">
+              <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={form.page_cap_enabled}
+                  onChange={(e) => update("page_cap_enabled", e.target.checked ? "true" : "")}
+                  className="rounded border-slate-700 bg-slate-900 text-sky-500"
+                />
+                Limit number of pages crawled
+              </label>
+              {form.page_cap_enabled && (
+                <div className="mt-2">
+                  <input
+                    id="max-pages"
+                    type="number"
+                    min={1}
+                    className="input"
+                    placeholder="e.g. 500"
+                    value={form.max_pages}
+                    onChange={(event) => update("max_pages", event.target.value)}
+                  />
+                  <p className="mt-1.5 text-xs text-slate-500">
+                    Leave unchecked to crawl every page the site has (recommended).
+                  </p>
+                </div>
+              )}
             </div>
 
             <div className="sm:col-span-2">

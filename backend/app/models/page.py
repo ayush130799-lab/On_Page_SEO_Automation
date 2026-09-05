@@ -28,9 +28,11 @@ from .enums import AIStatus
 
 if TYPE_CHECKING:
     from .audit import SEOAudit, SEOIssue
+    from .intent import PageIntentProfile
     from .metrics import GA4Metric, GSCMetric, HistoricalMetric, SemrushMetric
     from .priority import PriorityScore
     from .recommendation import AIRecommendation
+    from .recommendation_score import RecommendationScore
     from .website import Website
 
 
@@ -57,6 +59,10 @@ class Page(TimestampMixin, Base):
     first_seen_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     last_seen_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     last_crawled_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    #: When the stored content signals were captured. Older than ``last_crawled_at`` means
+    #: the most recent crawl carried no document and the previous values were kept rather
+    #: than being overwritten with blanks.
+    content_captured_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
     # ── Latest crawl snapshot (denormalised for fast list queries) ──────────
     status_code: Mapped[int | None] = mapped_column(Integer, index=True)
@@ -66,9 +72,38 @@ class Page(TimestampMixin, Base):
     meta_description: Mapped[str | None] = mapped_column(Text)
     h1: Mapped[str | None] = mapped_column(Text)
     h1_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    h4_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    h5_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    h6_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    empty_heading_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: How many <title> / <meta name="description"> / <meta name="robots"> tags were present.
+    #: More than one is a conflict search engines resolve arbitrarily.
+    title_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    meta_description_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    meta_robots_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: missing | empty | self | other | relative | invalid | multiple
+    canonical_status: Mapped[str | None] = mapped_column(String(20))
+    #: Three documented word measurements - see crawler/extractor.py.
+    raw_word_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    visible_word_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    main_content_word_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: "main" | "article" | "body" - which subtree the content measure came from.
+    content_scope: Mapped[str | None] = mapped_column(String(20))
+    tracking_pixel_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    non_http_link_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sponsored_link_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    ugc_link_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    structured_data_formats: Mapped[list[str] | None] = mapped_column(JSONColumn)
+    #: Set when JavaScript rendering was required but did not succeed.
+    render_error: Mapped[str | None] = mapped_column(Text)
+    extraction_errors: Mapped[list[str] | None] = mapped_column(JSONColumn)
     h2_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     h3_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     canonical_url: Mapped[str | None] = mapped_column(String(2048))
+    #: Raw href value from the canonical tag before URL resolution (e.g. "/about/" vs resolved).
+    canonical_raw: Mapped[str | None] = mapped_column(Text)
+    #: Number of <link rel="canonical"> tags found; >1 = conflict.
+    canonical_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     robots_directive: Mapped[str | None] = mapped_column(Text)
     x_robots_tag: Mapped[str | None] = mapped_column(Text)
     content_type: Mapped[str | None] = mapped_column(String(255))
@@ -85,18 +120,31 @@ class Page(TimestampMixin, Base):
     content_hash: Mapped[str | None] = mapped_column(String(64), index=True)
 
     image_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: Images where the alt attribute is completely absent (genuine oversight).
     missing_alt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: Images where alt="" (intentionally decorative — correct accessibility practice).
+    empty_alt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     internal_link_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     external_link_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     broken_link_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     #: How many other pages on this site link here — 0 means orphan.
     inbound_internal_links: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: Links with rel=sponsored.
+    sponsored_link_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: Links with rel=ugc (user generated content).
+    ugc_link_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: Pagination signals extracted from <link rel="next/prev">.
+    pagination_next: Mapped[str | None] = mapped_column(String(2048))
+    pagination_prev: Mapped[str | None] = mapped_column(String(2048))
 
     was_rendered: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     response_time_ms: Mapped[int | None] = mapped_column(Integer)
     content_bytes: Mapped[int | None] = mapped_column(Integer)
     crawl_status: Mapped[str] = mapped_column(String(30), default="pending", nullable=False)
     crawl_error: Mapped[str | None] = mapped_column(Text)
+    #: Data quality indicator — separates extraction failures from SEO issues.
+    #: "ok" | "partial" | "render_failed" | "failed"
+    crawl_quality: Mapped[str] = mapped_column(String(20), default="ok", nullable=False)
 
     # ── Latest scores (denormalised; authoritative rows live in seo_audits /
     #    priority_scores) ────────────────────────────────────────────────────
@@ -133,9 +181,15 @@ class Page(TimestampMixin, Base):
     priority_scores: Mapped[list["PriorityScore"]] = relationship(
         back_populates="page", cascade="all, delete-orphan"
     )
+    recommendation_scores: Mapped[list["RecommendationScore"]] = relationship(
+        back_populates="page", cascade="all, delete-orphan"
+    )
     recommendations: Mapped[list["AIRecommendation"]] = relationship(
         back_populates="page", cascade="all, delete-orphan"
     )
     historical_metrics: Mapped[list["HistoricalMetric"]] = relationship(
         back_populates="page", cascade="all, delete-orphan"
+    )
+    intent_profile: Mapped["PageIntentProfile | None"] = relationship(
+        back_populates="page", cascade="all, delete-orphan", uselist=False
     )

@@ -7,6 +7,7 @@
  * to tune a weighted model with any confidence.
  */
 
+import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
@@ -41,6 +42,11 @@ function WebsiteSettings() {
   const [website, setWebsite] = useState<Website | null>(null);
   const [weights, setWeights] = useState<WeightResponse | null>(null);
   const [draft, setDraft] = useState<Record<string, number>>({});
+  const [crawlSettings, setCrawlSettings] = useState({
+    render_mode: "auto",
+    max_pages: "",
+    respect_robots_txt: true,
+  });
   const [preview, setPreview] = useState<Record<string, unknown>[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -56,6 +62,11 @@ function WebsiteSettings() {
       setWebsite(site);
       setWeights(weightData);
       setDraft(weightData.weights);
+      setCrawlSettings({
+        render_mode: site.render_mode || "auto",
+        max_pages: site.max_pages ? String(site.max_pages) : "",
+        respect_robots_txt: site.respect_robots_txt ?? true,
+      });
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "Could not load settings.");
     } finally {
@@ -100,6 +111,25 @@ function WebsiteSettings() {
     }
   };
 
+  const saveCrawlSettings = async () => {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const updated = await api.websites.update(websiteId, {
+        render_mode: crawlSettings.render_mode,
+        max_pages: crawlSettings.max_pages ? Number(crawlSettings.max_pages) : null,
+        respect_robots_txt: crawlSettings.respect_robots_txt,
+      });
+      setWebsite(updated);
+      setNotice("Crawl settings updated. Run 'Crawl now' to recrawl with these settings.");
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Could not save crawl settings.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const remove = async () => {
     if (!window.confirm(`Delete ${website?.name}? Every crawl, metric and score is removed.`)) {
       return;
@@ -131,6 +161,16 @@ function WebsiteSettings() {
         ]}
         title="Settings"
         subtitle={website?.name}
+        actions={
+          <div className="flex items-center gap-2">
+            <Link href={`/websites/${websiteId}/roadmap`} className="btn-secondary">
+              Roadmap
+            </Link>
+            <Link href={`/websites/${websiteId}/recommendations`} className="btn-secondary">
+              AI recommendations
+            </Link>
+          </div>
+        }
       />
 
       {error && (
@@ -257,20 +297,102 @@ function WebsiteSettings() {
         )}
 
         {website && (
-          <Card title="Website">
-            <dl className="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
-              <Row label="URL" value={website.url} />
-              <Row label="Domain" value={website.domain} />
-              <Row label="Repository" value={website.github_repo ?? "not connected"} />
-              <Row label="Branch" value={website.github_branch ?? "—"} />
-              <Row label="Page limit" value={website.max_pages ? formatNumber(website.max_pages) : "default"} />
-              <Row label="Rendering" value={website.render_mode} />
-              <Row label="Pages tracked" value={formatNumber(website.total_pages)} />
-              <Row
-                label="robots.txt"
-                value={website.respect_robots_txt ? "respected" : "ignored"}
-              />
-            </dl>
+          <Card title="Crawl & Rendering settings">
+            <div className="space-y-4">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="sm:col-span-2">
+                  <label className="label" htmlFor="render-mode">
+                    JavaScript rendering
+                  </label>
+                  <select
+                    id="render-mode"
+                    className="input"
+                    value={crawlSettings.render_mode}
+                    onChange={(e) =>
+                      setCrawlSettings({ ...crawlSettings, render_mode: e.target.value })
+                    }
+                  >
+                    <option value="auto">Auto — render only thin pages / SPAs</option>
+                    <option value="always">Always render (Full Chromium — best accuracy)</option>
+                    <option value="never">Never render (fastest, static HTML only)</option>
+                  </select>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Use &quot;Always render&quot; for React / Next.js / Vue SPAs so every route
+                    gets unique rendered content instead of the static shell.
+                  </p>
+                </div>
+
+                <div className="sm:col-span-2">
+                  <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={!!crawlSettings.max_pages}
+                      onChange={(e) =>
+                        setCrawlSettings({ ...crawlSettings, max_pages: e.target.checked ? "500" : "" })
+                      }
+                      className="rounded border-slate-700 bg-slate-900 text-sky-500"
+                    />
+                    Limit number of pages crawled
+                  </label>
+                  {crawlSettings.max_pages && (
+                    <div className="mt-2">
+                      <input
+                        id="max-pages"
+                        type="number"
+                        min={1}
+                        className="input"
+                        placeholder="e.g. 500"
+                        value={crawlSettings.max_pages}
+                        onChange={(e) =>
+                          setCrawlSettings({ ...crawlSettings, max_pages: e.target.value })
+                        }
+                      />
+                      <p className="mt-1 text-xs text-slate-500">
+                        Leave unchecked to crawl every page the site has (recommended).
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                <div className="sm:col-span-2">
+                  <label className="flex items-center gap-2 text-sm text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={crawlSettings.respect_robots_txt}
+                      onChange={(e) =>
+                        setCrawlSettings({ ...crawlSettings, respect_robots_txt: e.target.checked })
+                      }
+                      className="rounded border-slate-700 bg-slate-900 text-sky-500"
+                    />
+                    Respect robots.txt rules during crawl
+                  </label>
+                </div>
+              </div>
+
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => void saveCrawlSettings()}
+                  disabled={busy}
+                  className="btn-primary"
+                >
+                  {busy ? "Saving…" : "Save crawl settings"}
+                </button>
+              </div>
+
+              <div className="mt-4 border-t border-slate-800 pt-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">
+                  Site details
+                </p>
+                <dl className="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
+                  <Row label="URL" value={website.url} />
+                  <Row label="Domain" value={website.domain} />
+                  <Row label="Repository" value={website.github_repo ?? "not connected"} />
+                  <Row label="Branch" value={website.github_branch ?? "—"} />
+                  <Row label="Pages tracked" value={formatNumber(website.total_pages)} />
+                </dl>
+              </div>
+            </div>
           </Card>
         )}
 

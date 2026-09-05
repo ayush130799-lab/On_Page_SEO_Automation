@@ -55,11 +55,15 @@ async def lifespan(_: FastAPI):
         raise RuntimeError(
             "SECRET_KEY must be set to a strong random value when ENVIRONMENT=production."
         )
+    if settings.is_production and (settings.bootstrap_admin_password or "password123") == "password123":
+        raise RuntimeError(
+            "BOOTSTRAP_ADMIN_PASSWORD must be set to a strong value when ENVIRONMENT=production."
+        )
     try:
-        # Alembic owns the schema in production; this keeps the SQLite dev path frictionless.
+        # Create any missing tables (e.g. PostgreSQL or SQLite) automatically on startup
         init_db()
     except Exception as exc:
-        logger.warning("Database initialisation skipped (%s). Run 'alembic upgrade head'.", exc)
+        logger.warning("Database initialisation warning (%s).", exc)
     _bootstrap_admin()
     yield
 
@@ -78,7 +82,6 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
-        allow_origin_regex=r"https?://.*",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -88,14 +91,18 @@ def create_app() -> FastAPI:
 
     from .api.routes import (
         auth,
+        competitors,
         crawls,
         dashboard,
         debug,
+        experiments,
         integrations,
         jobs,
         pages,
         priority,
         recommendations,
+        roadmap,
+        validate,
         webhooks,
         websites,
     )
@@ -108,9 +115,13 @@ def create_app() -> FastAPI:
     app.include_router(integrations.router)
     app.include_router(priority.router)
     app.include_router(recommendations.router)
+    app.include_router(roadmap.router)
+    app.include_router(competitors.router)
+    app.include_router(experiments.router)
     app.include_router(webhooks.router)
     app.include_router(jobs.router)
     app.include_router(debug.router)
+    app.include_router(validate.router)
 
     @app.get("/", tags=["system"])
     def root() -> dict[str, str]:

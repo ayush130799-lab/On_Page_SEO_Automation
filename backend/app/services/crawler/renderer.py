@@ -17,8 +17,10 @@ logger = logging.getLogger(__name__)
 
 #: Root elements that frameworks mount into or framework hydration scripts.
 _SPA_ROOTS = re.compile(
-    r'<(?:div|main|section)[^>]+id=["\'](?:root|app|__next|__nuxt|q-app|svelte)["\'][^>]*>'
-    r'|__NEXT_DATA__|self\.__next_f|window\.__NUXT__|window\.__INITIAL_STATE__',
+    r'<(?:div|main|section|app-root)[^>]+(?:id|class)=["\'](?:root|app|__next|__nuxt|q-app|svelte|___gatsby|seo-fallback)["\'][^>]*>'
+    r'|<app-root[^>]*>'
+    r'|__NEXT_DATA__|self\.__next_f|window\.__NUXT__|window\.__INITIAL_STATE__|window\.__remixContext'
+    r'|data-reactroot|data-server-rendered',
     re.IGNORECASE,
 )
 _BODY_TEXT = re.compile(r"<body[^>]*>(.*?)</body>", re.IGNORECASE | re.DOTALL)
@@ -112,11 +114,12 @@ class PlaywrightRenderer:
             try:
                 context = await self._browser.new_context(
                     user_agent=user_agent or settings.user_agent,
-                    viewport={"width": 1366, "height": 900},
+                    viewport={"width": 1920, "height": 1080},
                     ignore_https_errors=False,
+                    locale="en-US",
                 )
                 page = await context.new_page()
-                # Images and fonts do not affect extraction; skipping them is a large speed win.
+                # Images and media do not affect SEO text/link extraction; skipping them speeds up rendering.
                 await page.route(
                     "**/*",
                     lambda route: asyncio.ensure_future(
@@ -131,12 +134,27 @@ class PlaywrightRenderer:
                     logger.debug("goto domcontentloaded timeout/error for %s: %s", url, goto_exc)
 
                 try:
-                    await page.wait_for_load_state("load", timeout=1500)
+                    await page.wait_for_load_state("load", timeout=2000)
                 except Exception:
                     pass
 
-                # Give client-side frameworks (React/Next.js/Vue) 300ms to mount DOM nodes
-                await page.wait_for_timeout(300)
+                # JetOctopus-grade networkidle wait: let client-side router & API calls resolve
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=2500)
+                except Exception:
+                    pass
+
+                # If an SPA root container exists, wait for dynamic child nodes to mount
+                try:
+                    await page.wait_for_selector(
+                        "#root > *:not(#seo-fallback), #app > *, #__next > *, main",
+                        timeout=2000,
+                    )
+                except Exception:
+                    pass
+
+                # Settle time for dynamic title / meta / hydration updates (React Helmet, Next Head)
+                await page.wait_for_timeout(400)
 
                 html = await page.content()
                 if html:

@@ -154,3 +154,49 @@ def check_viewport(page):
         severity=Severity.MEDIUM,
         evidence={"has_viewport": False, "reason": "Missing meta name='viewport' tag"},
     )
+
+
+@rule(
+    id="title_multiple",
+    check_type="title_multiple",
+    category=IssueCategory.METADATA,
+    weight=4.0,
+    title="Multiple title tags",
+    fix_hint="Keep exactly one <title> in <head>; remove the duplicates.",
+)
+def check_multiple_titles(page):
+    """A second <title> is a conflict search engines resolve arbitrarily."""
+    count = getattr(page, "title_count", None)
+    if count is None:
+        return ok("Title count not available.")
+    if count > 1:
+        return fail(
+            f"{count} <title> tags found — search engines will pick one arbitrarily.",
+            score=30.0,
+            severity=Severity.HIGH,
+            evidence={"title_count": count, "title": getattr(page, "title", None)},
+        )
+    return ok("Exactly one title tag." if count == 1 else "No title tag found.")
+
+
+@rule(
+    id="meta_description_multiple",
+    check_type="meta_description_multiple",
+    category=IssueCategory.METADATA,
+    weight=2.0,
+    title="Multiple meta descriptions",
+    fix_hint="Keep exactly one <meta name=\"description\">.",
+)
+def check_multiple_descriptions(page):
+    """Duplicated description tags leave the choice of snippet source to the search engine."""
+    count = getattr(page, "meta_description_count", None)
+    if count is None:
+        return ok("Meta description count not available.")
+    if count > 1:
+        return warn(
+            f"{count} meta description tags found.",
+            score=50.0,
+            severity=Severity.MEDIUM,
+            evidence={"meta_description_count": count},
+        )
+    return ok("Exactly one meta description." if count == 1 else "No meta description found.")

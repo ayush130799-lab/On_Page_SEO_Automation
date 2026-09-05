@@ -361,15 +361,21 @@ def connect_github(payload: GitHubConnectRequest, website: WritableWebsite, db: 
         website.github_framework = payload.framework
     db.commit()
 
+    credentials = {"webhook_secret": payload.webhook_secret}
+    if payload.access_token:
+        credentials["access_token"] = payload.access_token
+
     return upsert_integration(
         db,
         website,
         IntegrationProvider.GITHUB,
-        credentials={"webhook_secret": payload.webhook_secret},
+        credentials=credentials,
         config={
             "repo": repo,
             "branch": payload.branch,
             "webhook_url": f"{settings.public_base_url}/api/webhooks/github",
+            "deployment_gate": payload.deployment_gate,
+            "has_access_token": bool(payload.access_token),
         },
         account_label=repo,
         status=IntegrationStatus.CONNECTED,

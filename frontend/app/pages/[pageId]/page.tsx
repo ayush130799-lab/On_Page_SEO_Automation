@@ -35,7 +35,7 @@ import {
   formatPercent,
   formatRelative,
 } from "@/lib/format";
-import type { AiFinding, PageDetailResponse } from "@/lib/types";
+import type { AiFinding, CompetitorAnalysisResponse, PageDetailResponse } from "@/lib/types";
 
 export default function PageDetailRoute() {
   return (
@@ -54,11 +54,33 @@ function PageDetailView() {
   const [loading, setLoading] = useState(true);
   const [analysing, setAnalysing] = useState(false);
 
+  // Competitor SERP Benchmark state
+  const [competitor, setCompetitor] = useState<CompetitorAnalysisResponse | null>(null);
+  const [competitorKeyword, setCompetitorKeyword] = useState("");
+  const [analysingCompetitors, setAnalysingCompetitors] = useState(false);
+  const [serpConfigured, setSerpConfigured] = useState(true);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setData(await api.pages.detail(pageId));
+      const pageData = await api.pages.detail(pageId);
+      setData(pageData);
       setError("");
+
+      // Fetch live SERP competitor analysis & status in parallel
+      try {
+        const [serpStatus, compData] = await Promise.all([
+          api.competitors.status(),
+          api.competitors.get(pageData.page.website_id, pageId).catch(() => null),
+        ]);
+        setSerpConfigured(serpStatus.configured);
+        if (compData && compData.available) {
+          setCompetitor(compData);
+          if (compData.keyword) setCompetitorKeyword(compData.keyword);
+        }
+      } catch {
+        // Non-blocking for competitor data
+      }
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "Could not load this page.");
     } finally {
@@ -85,6 +107,24 @@ function PageDetailView() {
       setError(caught instanceof ApiError ? caught.message : "AI analysis failed.");
     } finally {
       setAnalysing(false);
+    }
+  };
+
+  const runCompetitorAnalysis = async () => {
+    if (!data) return;
+    setAnalysingCompetitors(true);
+    setError("");
+    try {
+      const kw = competitorKeyword.trim() || undefined;
+      await api.competitors.analyse(data.page.website_id, pageId, { keyword: kw, wait: true });
+      const fresh = await api.competitors.get(data.page.website_id, pageId);
+      if (fresh && fresh.available) {
+        setCompetitor(fresh);
+      }
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Competitor analysis failed.");
+    } finally {
+      setAnalysingCompetitors(false);
     }
   };
 
@@ -247,10 +287,32 @@ function PageDetailView() {
             >
               <p className="text-sm text-slate-300">{recommendationPayload.summary}</p>
 
+              {(recommendationPayload.reason || recommendation?.reason) && (
+                <div className="mt-3 rounded-lg border border-indigo-500/30 bg-indigo-950/30 p-3 text-xs text-indigo-200">
+                  <span className="font-semibold text-indigo-300">Why this recommendation matters: </span>
+                  {recommendationPayload.reason || recommendation?.reason}
+                </div>
+              )}
+
               <div className="mt-3 flex flex-wrap gap-2 text-xs">
                 {recommendationPayload.search_intent && (
-                  <span className="chip bg-slate-500/15 text-slate-300 ring-slate-500/30">
+                  <span className="chip bg-sky-500/15 text-sky-300 ring-sky-500/30">
                     Intent: {recommendationPayload.search_intent}
+                  </span>
+                )}
+                {(recommendationPayload.search_impact_score ?? recommendation?.search_impact_score) !== undefined && (
+                  <span className="chip bg-indigo-500/15 text-indigo-300 ring-indigo-500/30 font-medium">
+                    Search Impact: {Math.round(recommendationPayload.search_impact_score ?? recommendation?.search_impact_score ?? 0)}/100
+                  </span>
+                )}
+                {(recommendationPayload.user_activity_score ?? recommendation?.user_activity_score) !== undefined && (
+                  <span className="chip bg-cyan-500/15 text-cyan-300 ring-cyan-500/30 font-medium">
+                    User Activity Impact: {Math.round(recommendationPayload.user_activity_score ?? recommendation?.user_activity_score ?? 0)}/100
+                  </span>
+                )}
+                {(recommendationPayload.impact_score ?? recommendation?.impact_score) !== undefined && (
+                  <span className="chip bg-emerald-500/15 text-emerald-300 ring-emerald-500/30 font-semibold">
+                    Overall Impact: {Math.round(recommendationPayload.impact_score ?? recommendation?.impact_score ?? 0)}/100
                   </span>
                 )}
                 <span className="chip bg-slate-500/15 text-slate-300 ring-slate-500/30">
@@ -324,6 +386,175 @@ function PageDetailView() {
               </div>
             </Card>
           )}
+
+          {/* Live SERP & Competitor Benchmark Card (Phase 4) */}
+          <Card
+            title="Live SERP Competitor Benchmark (Google)"
+            action={
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  placeholder="Target search keyword…"
+                  value={competitorKeyword}
+                  onChange={(e) => setCompetitorKeyword(e.target.value)}
+                  className="rounded bg-slate-900 border border-slate-700 px-2.5 py-1 text-xs text-slate-200 focus:outline-none focus:border-sky-500 w-44 sm:w-60"
+                />
+                <button
+                  type="button"
+                  onClick={() => void runCompetitorAnalysis()}
+                  disabled={analysingCompetitors || !serpConfigured}
+                  className="btn-primary text-xs py-1"
+                >
+                  {analysingCompetitors ? "Analyzing SERP…" : "Analyze Competitors"}
+                </button>
+              </div>
+            }
+          >
+            {!serpConfigured ? (
+              <p className="text-sm text-slate-400">
+                SERP competitor analysis requires a SerpApi key. Add <code className="text-sky-300">SERPAPI_KEY</code> to your <code className="text-sky-300">.env</code> file to enable live Google search benchmarks.
+              </p>
+            ) : !competitor ? (
+              <div className="rounded-lg border border-dashed border-slate-800 p-6 text-center">
+                <p className="text-sm text-slate-300 font-medium">
+                  No competitor analysis has been run for this URL yet.
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Enter a target keyword above and click <strong>Analyze Competitors</strong> to benchmark against top 5 Google search results, extract People Also Ask questions, and detect content gaps.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-400">Target Keyword:</span>
+                    <span className="font-semibold text-sky-400 bg-sky-500/10 px-2.5 py-0.5 rounded border border-sky-500/20">
+                      {competitor.keyword}
+                    </span>
+                  </div>
+                  <span className="text-slate-500">
+                    Fetched {competitor.fetched_count} competitors · {formatRelative(competitor.analysed_at)}
+                  </span>
+                </div>
+
+                {/* Content Gap Benchmarks */}
+                {competitor.content_gap && (
+                  <div className="grid gap-3 sm:grid-cols-2 rounded-lg border border-slate-800 bg-slate-900/40 p-3.5">
+                    <div>
+                      <span className="text-xs font-medium text-slate-400">Word Count Gap</span>
+                      <div className="mt-1.5 flex items-baseline gap-2">
+                        <span className="text-base font-bold text-slate-100">
+                          {formatNumber(page.word_count)}
+                        </span>
+                        <span className="text-xs text-slate-500">words (your page) vs</span>
+                        <span className="text-base font-bold text-amber-400">
+                          {formatNumber(competitor.content_gap.competitor_median_word_count ?? 0)}
+                        </span>
+                        <span className="text-xs text-slate-500">competitor median</span>
+                      </div>
+                      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
+                        <div
+                          className="h-full rounded-full bg-amber-500"
+                          style={{
+                            width: `${Math.min(
+                              100,
+                              Math.round(
+                                ((page.word_count || 1) /
+                                  (competitor.content_gap.competitor_median_word_count || 1)) *
+                                  100,
+                              ),
+                            )}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <span className="text-xs font-medium text-slate-400">Heading Structure (H2)</span>
+                      <div className="mt-1.5 flex items-baseline gap-2">
+                        <span className="text-base font-bold text-slate-100">{page.h2_count}</span>
+                        <span className="text-xs text-slate-500">H2s (your page) vs</span>
+                        <span className="text-base font-bold text-indigo-400">
+                          {competitor.content_gap.competitor_avg_h2_count?.toFixed(1) ?? "—"}
+                        </span>
+                        <span className="text-xs text-slate-500">competitor avg</span>
+                      </div>
+                      {competitor.content_gap.missing_subtopics && competitor.content_gap.missing_subtopics.length > 0 && (
+                        <div className="mt-2 text-xs">
+                          <span className="text-slate-500">Missing Subtopics: </span>
+                          <span className="text-rose-300 font-medium">
+                            {competitor.content_gap.missing_subtopics.join(", ")}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Google PAA Questions */}
+                {competitor.paa_questions && competitor.paa_questions.length > 0 && (
+                  <div>
+                    <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">
+                      Google "People Also Ask" (PAA) Questions
+                    </h4>
+                    <div className="flex flex-wrap gap-1.5">
+                      {competitor.paa_questions.map((q, i) => {
+                        const questionText = typeof q === "string" ? q : (q as { question?: string })?.question || "";
+                        if (!questionText) return null;
+                        return (
+                          <span
+                            key={i}
+                            className="chip bg-sky-500/10 text-sky-300 ring-sky-500/20 text-xs py-1"
+                          >
+                            ❓ {questionText}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Competitors List */}
+                {competitor.competitors && competitor.competitors.length > 0 && (
+                  <div>
+                    <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">
+                      Top Ranking Competitors (Google SERP)
+                    </h4>
+                    <div className="space-y-2">
+                      {competitor.competitors.map((comp) => (
+                        <div
+                          key={comp.position}
+                          className="rounded border border-slate-800 p-2.5 text-xs bg-slate-950/40"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 truncate">
+                              <span className="font-bold text-slate-400">#{comp.position}</span>
+                              <span className="font-medium text-slate-200 truncate">{comp.title || comp.domain}</span>
+                              <a
+                                href={comp.url}
+                                target="_blank"
+                                rel="noreferrer noopener"
+                                className="text-sky-400 hover:underline font-mono truncate"
+                              >
+                                ({comp.domain})
+                              </a>
+                            </div>
+                            <div className="flex items-center gap-3 shrink-0 text-slate-400">
+                              <span>{formatNumber(comp.word_count)} words</span>
+                              <span>{comp.h2_count ?? 0} H2s</span>
+                            </div>
+                          </div>
+                          {comp.snippet && (
+                            <p className="mt-1 text-slate-400 line-clamp-2">{comp.snippet}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </Card>
 
           <Card title="Extracted values">
             <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-2">

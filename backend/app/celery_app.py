@@ -42,6 +42,14 @@ celery_app.conf.update(
         "seo.sync.*": {"queue": "sync"},
         "seo.score.*": {"queue": "score"},
         "seo.ai.*": {"queue": "ai"},
+        # External-API-bound work (an LLM call, GitHub's API, SerpApi) shares the "ai" queue with
+        # AI analysis rather than "score" — all three are rate-limited, third-party-latency-bound
+        # tasks that must not be starved by (or starve) the fast in-process scoring tasks.
+        "seo.impact.*": {"queue": "ai"},
+        "seo.github.*": {"queue": "ai"},
+        "seo.serp.*": {"queue": "ai"},
+        # Pure recompute over already-stored GSC/GA4 rows — belongs with the other score tasks.
+        "seo.experiments.*": {"queue": "score"},
     },
 )
 
@@ -59,6 +67,13 @@ celery_app.conf.beat_schedule = {
     "daily-history-rollup": {
         "task": "seo.score.rollup",
         "schedule": crontab(hour=(settings.daily_sync_hour_utc + 3) % 24, minute=0),
+    },
+    "daily-experiment-checkpoints": {
+        # §8.4: measure any 7/14/28-day post-deployment checkpoint that has come due. Runs
+        # after the sync stage so a checkpoint due today reads that day's freshly-synced GSC/GA4
+        # rows rather than yesterday's.
+        "task": "seo.experiments.check_due",
+        "schedule": crontab(hour=(settings.daily_sync_hour_utc + 2) % 24, minute=30),
     },
     "daily-scheduled-crawl": {
         "task": "seo.crawl.daily_all",

@@ -57,35 +57,71 @@ def check_http_status(page):
     fix_hint="Remove the blocking directive if this page should appear in search results.",
 )
 def check_robots(page):
-    """`noindex` silently removes a page from search — the highest-impact single tag on a page."""
-    meta_robots = (getattr(page, "robots_directive", None) or "").lower().strip()
-    x_robots = (getattr(page, "x_robots_tag", None) or "").lower().strip()
-    combined = f"{meta_robots} {x_robots}".strip()
+    """`noindex` silently removes a page from search - the highest-impact single tag on a page.
 
-    if "noindex" in combined:
-        return fail(
-            "Page carries a 'noindex' directive and will not be indexed.",
-            score=20.0,
-            severity=Severity.CRITICAL,
-            evidence={"meta_robots": meta_robots or None, "x_robots_tag": x_robots or None, "combined": combined},
-        )
-    if "nofollow" in combined:
-        return warn(
-            "Page carries a 'nofollow' directive, so its links pass no signal.",
-            score=60.0,
-            severity=Severity.HIGH,
-            evidence={"meta_robots": meta_robots or None, "x_robots_tag": x_robots or None, "combined": combined},
-        )
-    if "none" in combined:
+    Directives are tokenised rather than substring-matched: `max-image-preview:none` contains the
+    word "none" but is not `robots: none`, and an `X-Robots-Tag` scoped to another crawler says
+    nothing about how this page will be treated.
+    """
+    from ..robots_directives import describe, resolve
+
+    directives = resolve(
+        getattr(page, "robots_directive", None) or getattr(page, "meta_robots", None),
+        getattr(page, "x_robots_tag", None),
+    )
+    evidence = directives.as_evidence()
+    summary = describe(directives)
+
+    if "none" in directives.directives:
         return fail(
             "Page carries 'robots: none', which means noindex plus nofollow.",
             score=20.0,
             severity=Severity.CRITICAL,
-            evidence={"meta_robots": meta_robots or None, "x_robots_tag": x_robots or None, "combined": combined},
+            evidence=evidence,
         )
-    if combined:
-        return ok(f"Robots directive present and permissive: {combined}.")
+    if "noindex" in directives.directives:
+        source = directives.sources.get("noindex", "meta")
+        where = "the X-Robots-Tag header" if source == "header" else "the robots meta tag"
+        return fail(
+            f"Page carries a 'noindex' directive in {where} and will not be indexed.",
+            score=20.0,
+            severity=Severity.CRITICAL,
+            evidence=evidence,
+        )
+    if "nofollow" in directives.directives:
+        return warn(
+            "Page carries a 'nofollow' directive, so its links pass no signal.",
+            score=60.0,
+            severity=Severity.HIGH,
+            evidence=evidence,
+        )
+    if directives.directives or directives.values:
+        return ok(f"Robots directives present and permissive: {summary}.")
     return ok("No restrictive robots directive found.")
+
+
+@rule(
+    id="canonical_multiple",
+    check_type="canonical_multiple",
+    category=IssueCategory.INDEXABILITY,
+    weight=6.0,
+    title="Multiple canonical tags",
+    fix_hint="Remove duplicate <link rel=\"canonical\"> tags and keep exactly one per page.",
+)
+def check_multiple_canonical(page):
+    """Multiple canonicals create a conflict that search engines resolve arbitrarily."""
+    count = getattr(page, "canonical_count", None)
+    if count is None:
+        # Field not present (old crawl data) — skip rather than false-positive.
+        return ok("Canonical count not available.")
+    if count > 1:
+        return fail(
+            f"{count} canonical tags found — search engines will pick one arbitrarily.",
+            score=20.0,
+            severity=Severity.CRITICAL,
+            evidence={"canonical_count": count, "canonical_url": getattr(page, "canonical_url", None)},
+        )
+    return ok(f"Exactly {count} canonical tag found." if count == 1 else "No canonical tag found.")
 
 
 @rule(
@@ -99,6 +135,10 @@ def check_robots(page):
 def check_canonical(page):
     """Without a canonical, parameterised and duplicated variants compete with each other."""
     canonical = getattr(page, "canonical_url", None)
+    count = getattr(page, "canonical_count", 1 if canonical else 0)
+    # If multiple canonical rule already flagged this, pass here to avoid double-penalising.
+    if count > 1:
+        return ok("Canonical presence check skipped (multiple canonical tags detected).")
     if canonical:
         return ok("Canonical URL is present.")
     return warn(

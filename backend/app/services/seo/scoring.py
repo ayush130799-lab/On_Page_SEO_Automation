@@ -32,6 +32,10 @@ def calculate_score(
     total_weight = 0.0
     weighted_sum = 0.0
     for result in results:
+        # A check that never ran (page unreachable) is not evidence of health, so it is left out
+        # of the average entirely rather than counted as a pass.
+        if not getattr(result, "was_evaluated", True):
+            continue
         weight = resolved.get(result.check_type, 0.0)
         if weight <= 0:
             continue

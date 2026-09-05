@@ -61,6 +61,12 @@ class AIRecommendation(TimestampMixin, Base):
     content_quality_score: Mapped[float | None] = mapped_column(Float)
     topic_coverage_score: Mapped[float | None] = mapped_column(Float)
 
+    # Dual-impact and explainability fields (Phase 1)
+    search_impact_score: Mapped[float | None] = mapped_column(Float)
+    user_activity_score: Mapped[float | None] = mapped_column(Float)
+    impact_score: Mapped[float | None] = mapped_column(Float)
+    reason: Mapped[str | None] = mapped_column(Text)
+
     suggested_title: Mapped[str | None] = mapped_column(Text)
     suggested_meta_description: Mapped[str | None] = mapped_column(Text)
 

@@ -20,6 +20,7 @@ import {
   DistributionBar,
   EmptyState,
   ErrorNote,
+  IntentBadge,
   PageHeader,
   ProgressBar,
   ScoreBadge,
@@ -237,8 +238,14 @@ function WebsiteDashboard() {
         }
         actions={
           <>
+            <Link href={`/websites/${websiteId}/roadmap`} className="btn-secondary text-sky-300 font-medium">
+              Roadmap
+            </Link>
             <Link href={`/websites/${websiteId}/recommendations`} className="btn-secondary">
               AI recommendations
+            </Link>
+            <Link href={`/websites/${websiteId}/experiments`} className="btn-secondary">
+              Experiments
             </Link>
             <Link href={`/websites/${websiteId}/integrations`} className="btn-secondary">
               Integrations
@@ -643,6 +650,7 @@ function WebsiteDashboard() {
                       align="right"
                     />
                     <th>Major issues</th>
+                    <th>Intent</th>
                     <th>AI</th>
                   </tr>
                 </thead>
@@ -684,6 +692,16 @@ function WebsiteDashboard() {
                         <span className="text-xs text-slate-400">
                           {page.top_issues.length > 0 ? page.top_issues.join(" · ") : "—"}
                         </span>
+                      </td>
+                      <td>
+                        <div className="flex items-center gap-1">
+                          <IntentBadge intent={page.search_intent} />
+                          {page.intent_mismatch && (
+                            <span title="Intent mismatch detected" className="text-amber-400 text-xs">
+                              ⚠
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td>
                         <AiBadge status={page.ai_status} />
