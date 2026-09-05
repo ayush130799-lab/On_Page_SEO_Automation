@@ -322,3 +322,176 @@ export function DistributionBar({
     </div>
   );
 }
+
+// ── Phase 2: Search Intent & Keyword Intelligence components ────────────────
+
+/** Colour-coded badge for search intent categories. */
+export function IntentBadge({ intent }: { intent: string | null | undefined }) {
+  if (!intent) return <span className="text-slate-600">—</span>;
+
+  const styles: Record<string, string> = {
+    informational: "bg-sky-500/15 text-sky-300 ring-sky-500/30",
+    navigational: "bg-slate-500/15 text-slate-300 ring-slate-500/30",
+    commercial: "bg-amber-500/15 text-amber-300 ring-amber-500/30",
+    transactional: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30",
+    local: "bg-violet-500/15 text-violet-300 ring-violet-500/30",
+  };
+  const labels: Record<string, string> = {
+    informational: "Informational",
+    navigational: "Navigational",
+    commercial: "Commercial",
+    transactional: "Transactional",
+    local: "Local",
+  };
+
+  return (
+    <span className={`chip ${styles[intent] ?? "bg-slate-500/15 text-slate-400 ring-slate-500/30"}`}>
+      {labels[intent] ?? intent}
+    </span>
+  );
+}
+
+/** Alert card shown when a P0/P1 intent mismatch is detected for a page. */
+export function MismatchAlert({
+  severity,
+  businessIntent,
+  detectedIntent,
+  explanation,
+}: {
+  severity: string;
+  businessIntent: string | null | undefined;
+  detectedIntent: string | null | undefined;
+  explanation: string | null | undefined;
+}) {
+  const isP0 = severity === "P0";
+  const borderClass = isP0
+    ? "border-rose-500/40 bg-rose-500/10"
+    : "border-amber-500/40 bg-amber-500/10";
+  const labelClass = isP0 ? "text-rose-300" : "text-amber-300";
+  const iconClass = isP0 ? "text-rose-400" : "text-amber-400";
+
+  return (
+    <div
+      className={`rounded-lg border px-4 py-3 ${borderClass}`}
+      role="alert"
+      aria-label={`Intent mismatch ${severity}`}
+    >
+      <div className="flex items-start gap-3">
+        <span className={`mt-0.5 text-base ${iconClass}`} aria-hidden>
+          ⚠
+        </span>
+        <div className="flex-1 min-w-0">
+          <div className="flex flex-wrap items-center gap-2 mb-1">
+            <span className={`text-sm font-semibold ${labelClass}`}>
+              Intent Mismatch · {severity}
+            </span>
+            {businessIntent && (
+              <span className="text-xs text-slate-400">
+                Expected: <IntentBadge intent={businessIntent} />
+              </span>
+            )}
+            {detectedIntent && (
+              <span className="text-xs text-slate-400">
+                Ranking for: <IntentBadge intent={detectedIntent} />
+              </span>
+            )}
+          </div>
+          {explanation && (
+            <p className="text-xs text-slate-300 leading-relaxed">{explanation}</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const TIER_LABELS: Record<string, string> = {
+  primary: "Primary",
+  secondary: "Secondary",
+  long_tail: "Long-Tail",
+  semantic: "Semantic Entities",
+  question: "Question Keywords",
+};
+
+const TIER_COLORS: Record<string, string> = {
+  primary: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30",
+  secondary: "bg-sky-500/15 text-sky-300 ring-sky-500/30",
+  long_tail: "bg-violet-500/15 text-violet-300 ring-violet-500/30",
+  semantic: "bg-amber-500/15 text-amber-300 ring-amber-500/30",
+  question: "bg-slate-500/15 text-slate-300 ring-slate-500/30",
+};
+
+/**
+ * Displays the 5-tier keyword matrix for a page.
+ * Accepts either flat arrays per tier or a combined list.
+ */
+export function KeywordTierCard({
+  primary,
+  secondary,
+  longTail,
+  semantic,
+  question,
+  opportunityScore,
+}: {
+  primary?: string[];
+  secondary?: string[];
+  longTail?: string[];
+  semantic?: string[];
+  question?: string[];
+  opportunityScore?: number | null;
+}) {
+  const tiers = [
+    { key: "primary", keywords: primary },
+    { key: "secondary", keywords: secondary },
+    { key: "long_tail", keywords: longTail },
+    { key: "semantic", keywords: semantic },
+    { key: "question", keywords: question },
+  ].filter((t) => t.keywords && t.keywords.length > 0);
+
+  if (tiers.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed border-slate-700 px-4 py-6 text-center text-xs text-slate-500">
+        No keyword intelligence available yet. Run intent analysis to generate keyword tiers.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {opportunityScore != null && (
+        <div className="flex items-center gap-2 text-xs text-slate-400">
+          <span>Keyword Opportunity Score:</span>
+          <span
+            className={`tnum font-semibold ${
+              opportunityScore >= 60
+                ? "text-emerald-400"
+                : opportunityScore >= 35
+                ? "text-amber-400"
+                : "text-rose-400"
+            }`}
+          >
+            {opportunityScore.toFixed(1)}
+          </span>
+        </div>
+      )}
+      {tiers.map(({ key, keywords }) => (
+        <div key={key}>
+          <p className="mb-1.5 text-xs font-medium text-slate-500 uppercase tracking-wide">
+            {TIER_LABELS[key] ?? key}
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {(keywords ?? []).map((kw) => (
+              <span
+                key={kw}
+                className={`chip text-xs ${TIER_COLORS[key] ?? "bg-slate-500/15 text-slate-300 ring-slate-500/30"}`}
+              >
+                {kw}
+              </span>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+

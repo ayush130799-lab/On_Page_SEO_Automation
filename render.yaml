@@ -18,14 +18,35 @@ services:
         value: production
       - key: PORT
         value: "8000"
+      # Must be set to the deployed Vercel frontend URL (see DEPLOYMENT.md Step 5) before
+      # going live. Never leave this as "*" in production — it disables CORS's origin check.
       - key: CORS_ORIGINS
-        value: "*"
+        sync: false
+      # Update to this service's real Render URL once known (see DEPLOYMENT.md).
       - key: GOOGLE_REDIRECT_URI
-        value: "https://seo-automation-api-nq19.onrender.com/api/integrations/google/callback"
+        sync: false
       - key: PRIORITY_METRIC_WINDOW_DAYS
         value: "90"
       - key: SECRET_KEY
         generateValue: true
+      # AI provider — required for the AI recommendation pipeline to run at all.
+      - key: LLM_PROVIDER
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      # Google OAuth (Search Console + GA4 integrations).
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      # First-boot administrator. Set to real values before the first deploy;
+      # defaults are for local development only and must not be used in production.
+      - key: BOOTSTRAP_ADMIN_EMAIL
+        sync: false
+      - key: BOOTSTRAP_ADMIN_PASSWORD
+        sync: false
 
 databases:
   - name: seo-postgres

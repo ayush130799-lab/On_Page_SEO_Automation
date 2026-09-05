@@ -72,6 +72,9 @@ class PageListItem(ORMModel):
     ctr: float | None = None
     position: float | None = None
     top_issues: list[str] = []
+    # Phase 2: Search Intent
+    search_intent: str | None = None
+    intent_mismatch: bool = False
 
 
 class PageDetail(ORMModel):

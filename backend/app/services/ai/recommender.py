@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import Any, Sequence
 
 from pydantic import ValidationError as PydanticValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ...config import settings
@@ -29,6 +29,8 @@ from ...models import (
     AIStatus,
     GSCMetric,
     Page,
+    PageIntentProfile,
+    RecommendationScore,
     SEOAudit,
     SEOIssue,
     SemrushMetric,
@@ -58,6 +60,10 @@ class SelectionDecision:
     selected: bool
     reason: str
     rank: int | None = None
+    #: Which cost tier this page was routed to — rules | statistical | ai | deep_ai.
+    tier: str | None = None
+    #: The impact score the routing decision was made on, so the choice can be audited.
+    impact_score: float | None = None
 
 
 @dataclass
@@ -89,61 +95,142 @@ def select_pages(
     score_threshold: float | None = None,
     force: bool = False,
 ) -> tuple[list[Page], list[SelectionDecision]]:
-    """Choose which pages are worth an LLM call.
+    """Choose which pages are worth an LLM call, using the tiered cost model (§12.4).
 
-    A page qualifies when it is inside the top ``max_pages`` by priority **and** it is either
-    scoring below the threshold or carrying a CRITICAL issue. The CRITICAL override exists because
-    a single `noindex` can sit on a page that otherwise scores 95 — precisely the case a score
-    cut-off alone would miss.
+    Pages are ranked by their best computed impact score where one exists, because the question
+    the budget must answer is "where is the most unclaimed opportunity", not "what is most
+    broken": a page at 40/100 SEO health with no traffic is a worse use of a model call than one
+    at 80 bleeding click-through on 50,000 impressions.
+
+    Impact scores only exist once :mod:`app.services.impact.engine` has run. Before that — a
+    site's first crawl, or a caller that skipped scoring — this falls back to the priority score
+    and the SEO-score threshold, rather than treating "not yet scored" as "zero impact" and
+    silently selecting nothing.
+
+    Whether AI is enabled at all is deliberately *not* considered here. This function answers
+    which pages would be worth the call; the caller decides whether to make it, so the selection
+    preview endpoint still explains its reasoning on a deployment with AI switched off.
     """
+    from .tiering import Tier, route_page
+
     limit = max_pages or settings.ai_max_pages
     threshold = (
         score_threshold if score_threshold is not None else settings.ai_seo_score_threshold
     )
 
     pages = db.scalars(
-        select(Page)
-        .where(Page.website_id == website.id, Page.is_active.is_(True))
-        .order_by(
-            Page.priority_score.desc().nullslast(),
-            Page.seo_score.asc().nullsfirst(),
-            Page.id.asc(),
-        )
+        select(Page).where(Page.website_id == website.id, Page.is_active.is_(True))
     ).all()
+    if not pages:
+        return [], []
+
+    page_ids = [p.id for p in pages]
+
+    best_impact: dict[int, float] = {
+        page_id: float(best or 0.0)
+        for page_id, best in db.execute(
+            select(
+                RecommendationScore.page_id,
+                func.max(RecommendationScore.overall_priority),
+            )
+            .where(RecommendationScore.page_id.in_(page_ids))
+            .group_by(RecommendationScore.page_id)
+        ).all()
+    }
+
+    mismatched: set[int] = {
+        row[0]
+        for row in db.execute(
+            select(PageIntentProfile.page_id).where(
+                PageIntentProfile.page_id.in_(page_ids),
+                PageIntentProfile.intent_mismatch.is_(True),
+            )
+        ).all()
+    }
+
+    # Rank by impact where the engine has produced it; otherwise by the priority score, which is
+    # the best available proxy and what this gate ranked on before impact scoring existed.
+    have_impact = bool(best_impact)
+    ranked = sorted(
+        pages,
+        key=lambda p: (
+            best_impact.get(p.id, 0.0) if have_impact else (p.priority_score or 0.0),
+            -(p.seo_score if p.seo_score is not None else 0.0),
+        ),
+        reverse=True,
+    )
 
     selected: list[Page] = []
     decisions: list[SelectionDecision] = []
 
-    for rank, page in enumerate(pages, start=1):
+    for rank, page in enumerate(ranked, start=1):
+        impact = best_impact.get(page.id)
         decision = SelectionDecision(
-            page_id=page.id, url=page.url, selected=False, reason="", rank=rank
+            page_id=page.id, url=page.url, selected=False, reason="",
+            rank=rank, impact_score=impact,
         )
 
-        if len(selected) >= limit:
-            decision.reason = f"outside the top {limit} pages by priority"
-        elif force:
+        if force:
             decision.selected = True
             decision.reason = "explicitly requested"
-        elif page.highest_severity == Severity.CRITICAL:
-            decision.selected = True
-            decision.reason = "carries a CRITICAL issue"
+            decision.tier = Tier.L3_AI.value
         elif page.seo_score is None:
+            # Checked before the issue count: a page that has never been audited has no issues
+            # *recorded*, which is a different statement from having none.
             decision.reason = "not audited yet"
-        elif page.issue_count == 0:
+            decision.tier = Tier.L1_RULES.value
+        elif (page.issue_count or 0) == 0 and page.id not in mismatched:
             decision.reason = "no outstanding issues"
-        elif page.seo_score > threshold:
-            decision.reason = f"healthy (SEO {page.seo_score} > {threshold})"
+            decision.tier = Tier.L1_RULES.value
+        elif len(selected) >= limit:
+            decision.reason = f"outside the top {limit} pages by priority"
+            decision.tier = Tier.L2_STATISTICAL.value
         else:
-            decision.selected = True
-            decision.reason = f"SEO {page.seo_score} is at or below the {threshold} threshold"
+            # Inside the budget and worth considering — let the tier gate decide how far.
+            routed = route_page(
+                rank=rank,
+                impact_score=impact,
+                has_critical_issue=page.highest_severity == Severity.CRITICAL,
+                has_intent_mismatch=page.id in mismatched,
+                issue_count=page.issue_count or 0,
+                max_ai_pages=limit,
+                # Enablement is the caller's decision, not this gate's.
+                ai_enabled=True,
+            )
+            decision.tier = routed.tier.value
+
+            if impact is None:
+                # No impact score yet: fall back to the SEO-score gate.
+                if page.highest_severity == Severity.CRITICAL:
+                    decision.selected = True
+                    decision.reason = "carries a CRITICAL issue"
+                    decision.tier = Tier.L3_AI.value
+                elif page.seo_score > threshold:
+                    decision.reason = f"healthy (SEO {page.seo_score} > {threshold})"
+                    decision.tier = Tier.L2_STATISTICAL.value
+                else:
+                    decision.selected = True
+                    decision.reason = (
+                        f"SEO {page.seo_score} is at or below the {threshold} threshold"
+                    )
+                    decision.tier = Tier.L3_AI.value
+            else:
+                decision.selected = routed.uses_ai
+                decision.reason = routed.reason
+                # An explicit SEO-score cut-off still applies on top of impact routing.
+                if decision.selected and page.seo_score > threshold:
+                    decision.selected = False
+                    decision.reason = f"healthy (SEO {page.seo_score} > {threshold})"
+                    decision.tier = Tier.L2_STATISTICAL.value
 
         if decision.selected:
             selected.append(page)
         decisions.append(decision)
 
     logger.info(
-        "AI selection for website %s: %d of %d pages selected.",
-        website.id, len(selected), len(pages),
+        "AI selection for website %s: %d of %d pages selected (limit %d, ranked by %s).",
+        website.id, len(selected), len(pages), limit,
+        "impact score" if have_impact else "priority score",
     )
     return selected, decisions
 
@@ -275,6 +362,36 @@ def persist_recommendation(
         select(SEOAudit.id).where(SEOAudit.page_id == page.id).order_by(SEOAudit.id.desc()).limit(1)
     )
 
+    search_impact = recommendation.search_impact_score
+    user_impact = recommendation.user_activity_score
+    impact_score = recommendation.impact_score
+    reason = recommendation.reason
+
+    # Fallback to mathematical estimation if missing
+    if search_impact is None or user_impact is None or impact_score is None:
+        metrics = aggregate_page_metrics(
+            db, [page.id], window_days=settings.priority_metric_window_days
+        ).get(page.id, {})
+        from ..priority.components import (
+            compute_search_impact_score,
+            compute_user_activity_score,
+        )
+
+        if search_impact is None:
+            search_impact = compute_search_impact_score(metrics)
+        if user_impact is None:
+            user_impact = compute_user_activity_score(metrics)
+        if impact_score is None:
+            conf = recommendation.confidence if recommendation.confidence is not None else 0.75
+            impact_score = round(
+                min(100.0, (0.55 * search_impact + 0.45 * user_impact) * (0.5 + 0.5 * conf)), 1
+            )
+        if not reason:
+            reason = (
+                f"Search impact potential: {search_impact}/100, "
+                f"User activity impact: {user_impact}/100."
+            )
+
     row = AIRecommendation(
         website_id=website.id,
         page_id=page.id,
@@ -290,6 +407,10 @@ def persist_recommendation(
         expected_impact=recommendation.expected_impact,
         content_quality_score=recommendation.content_quality_score,
         topic_coverage_score=recommendation.topic_coverage_score,
+        search_impact_score=search_impact,
+        user_activity_score=user_impact,
+        impact_score=impact_score,
+        reason=reason,
         suggested_title=recommendation.suggested_title,
         suggested_meta_description=recommendation.suggested_meta_description,
         payload=recommendation.model_dump(),

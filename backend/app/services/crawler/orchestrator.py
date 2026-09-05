@@ -17,6 +17,7 @@ import httpx
 
 from ...config import settings
 from ...utils.url_utils import (
+    absolute_url,
     domain_of,
     is_probably_page,
     is_safe_url,
@@ -39,7 +40,8 @@ ProgressCallback = Callable[["CrawlProgress"], Awaitable[None] | None]
 class CrawlConfig:
     """Effective crawl settings — website overrides layered over global defaults."""
 
-    max_pages: int = field(default_factory=lambda: settings.max_pages)
+    # None = crawl every URL the site exposes; no artificial stop.
+    max_pages: int | None = field(default_factory=lambda: settings.max_pages)
     concurrency: int = field(default_factory=lambda: settings.concurrent_workers)
     request_timeout: float = field(default_factory=lambda: float(settings.request_timeout))
     max_retries: int = field(default_factory=lambda: settings.max_retries)
@@ -48,7 +50,8 @@ class CrawlConfig:
     respect_robots_txt: bool = field(default_factory=lambda: settings.respect_robots_txt)
     render_mode: str = "auto"
     render_enabled: bool = field(default_factory=lambda: settings.render_enabled)
-    render_max_pages: int = field(default_factory=lambda: settings.render_max_pages)
+    # None = no render cap; render every page that qualifies.
+    render_max_pages: int | None = field(default_factory=lambda: settings.render_max_pages)
     time_budget_seconds: int = field(default_factory=lambda: settings.crawl_time_budget_seconds)
     allow_local: bool = field(default_factory=lambda: settings.allow_local_crawl)
     user_agent: str = field(default_factory=lambda: settings.user_agent)
@@ -62,6 +65,7 @@ class CrawlConfig:
     def for_website(cls, website, **overrides) -> "CrawlConfig":
         """Build a config from a Website row, ignoring unset columns."""
         config = cls(
+            # website.max_pages=None means no explicit cap → inherit global (also None by default)
             max_pages=website.max_pages or settings.max_pages,
             crawl_delay=(
                 website.crawl_delay if website.crawl_delay is not None else settings.crawl_delay
@@ -148,7 +152,7 @@ class Crawler:
         """Add a URL to the frontier. Caller must hold the lock when running concurrently."""
         if url in self.enqueued:
             return False
-        if len(self.enqueued) >= self.config.max_pages:
+        if self.config.max_pages is not None and len(self.enqueued) >= self.config.max_pages:
             # The site has more crawlable URLs than the limit allows. Record it here rather than
             # only in the worker: when discovery alone exceeds the cap the workers never reach
             # their own check, and the run would otherwise report a complete crawl of a
@@ -187,9 +191,9 @@ class Crawler:
             client,
             sitemap_urls,
             self.base_domain,
-            # One over the cap, so that a site with more URLs than the limit is detectable
-            # rather than looking like an exactly-full crawl.
-            self.config.max_pages + 1,
+            # One over the cap so an exactly-full crawl is distinguishable from a truncated one.
+            # None means no cap: collect every URL in the sitemap.
+            (self.config.max_pages + 1) if self.config.max_pages is not None else None,
             timeout=self.config.request_timeout,
         )
         for url in discovered:
@@ -231,42 +235,75 @@ class Crawler:
 
         html = result.html
         rendered = False
-        if (
+        render_error: str | None = None
+        wanted_rendering = (
             self.config.render_enabled
             and self._renderer is not None
-            and self._renderer.rendered_count < self.config.render_max_pages
             and needs_rendering(html, render_mode=self.config.render_mode)
-        ):
-            rendered_html = await self._renderer.render(result.final_url, self.config.user_agent)
-            if rendered_html:
-                html = rendered_html
-                rendered = True
+        )
 
-        page = extract_page(result.final_url, html, self.base_domain, result.status_code)
+        if wanted_rendering:
+            if self.config.render_max_pages is not None and self._renderer.rendered_count >= self.config.render_max_pages:
+                render_error = (
+                    f"Render budget exhausted ({self.config.render_max_pages} pages); "
+                    "extracted from static HTML instead."
+                )
+            else:
+                rendered_html = await self._renderer.render(
+                    result.final_url, self.config.user_agent
+                )
+                if rendered_html:
+                    html = rendered_html
+                    rendered = True
+                else:
+                    # Falling back to static HTML is correct, but the page must be marked so a
+                    # thin client-rendered document is never reported as genuinely thin.
+                    render_error = (
+                        "JavaScript rendering was required but failed; "
+                        "values come from static HTML and may be incomplete."
+                    )
+
+        page = extract_page(
+            result.final_url,
+            html,
+            self.base_domain,
+            result.status_code,
+            headers=result.headers,
+        )
         page.final_url = result.final_url
         page.redirect_chain = result.redirect_chain
         page.was_rendered = rendered
+        page.render_error = render_error
         page.response_time_ms = result.elapsed_ms
         page.content_bytes = result.content_bytes
         page.x_robots_tag = result.x_robots_tag
         page.content_type = result.content_type
         page.headers = result.headers
+        page.crawl_quality = "render_failed" if render_error else "ok"
 
         async with self._lock:
             self.pages.append(page)
             if self.config.follow_links and not self.config.target_urls:
-                is_non_canonical = False
+                # The declared canonical is itself a discovery source.
                 if page.canonical_url:
-                    norm_canonical = normalize_url(page.canonical_url)
-                    norm_own = normalize_url(page.final_url or page.url)
-                    if norm_canonical != norm_own:
-                        is_non_canonical = True
-                        self._enqueue(norm_canonical)
+                    self._enqueue(normalize_url(page.canonical_url))
 
-                # Only expand internal links from canonical pages to avoid exponential parameter link loops
-                if not is_non_canonical:
-                    for link in page.internal_links:
-                        self._enqueue(link)
+                # hreflang alternates point at real, indexable pages on this site.
+                for alternate in page.hreflang:
+                    href = (alternate.get("href") or "").strip()
+                    if href:
+                        resolved = absolute_url(page.final_url or page.url, href)
+                        if resolved:
+                            self._enqueue(resolved)
+
+                # Every internal link is followed. Suppressing link expansion on pages whose
+                # canonical points elsewhere (the previous behaviour) silently under-discovered
+                # entire sections: a paginated listing canonicalised to page 1 would contribute
+                # none of its item links. Parameter explosion is bounded by the frontier cap and
+                # the exclude patterns, not by discarding links.
+                for link in page.internal_links:
+                    self._enqueue(link)
+
                 for hop in page.redirect_chain:
                     self._enqueue(hop)
 
@@ -282,7 +319,7 @@ class Crawler:
                 async with self._lock:
                     if url in self.visited:
                         continue
-                    if len(self.visited) >= self.config.max_pages:
+                    if len(self.visited) >= self.config.max_pages if self.config.max_pages is not None else False:
                         self.truncated = True
                         self.truncation_reason = f"Reached the {self.config.max_pages}-page limit."
                         continue

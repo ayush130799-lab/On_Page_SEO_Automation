@@ -134,18 +134,28 @@ def has_recursive_path_loop(url: str) -> bool:
     if not segments:
         return False
 
-    # Check for embedded hostname inside path
+    # Check for embedded hostname inside path — must look like a real FQDN (has a dot
+    # AND starts with www. or ends with a recognised TLD of 2+ chars after the dot).
+    # Simple word suffixes like "sign-in", "opt-in", "co-founder" must NOT match.
+    _hostname_re = re.compile(
+        r'^(?:www\.).*\.|'
+        r'.*\.(?:com|org|net|io|gov|edu|info|biz|mobi|name|co\.uk|co\.in|com\.au)$',
+        re.IGNORECASE,
+    )
     for seg in segments:
-        if "www." in seg or seg.endswith((".com", ".org", ".net", ".io", ".co", ".in")):
+        if _hostname_re.match(seg):
             return True
 
-    # Check for segment repetition (e.g., /blog/blog/ or /a/b/a/b/)
-    counts = {}
+    # Check for segment repetition (e.g., /blog/blog/ or /a/b/a/b/).
+    # Common harmless repeated words are allowed.
+    _allow_repeat = {"page", "p", "category", "tag", "index", "en", "us", "uk", "de", "fr",
+                     "in", "co", "the"}
+    counts: dict[str, int] = {}
     for i, seg in enumerate(segments):
         counts[seg] = counts.get(seg, 0) + 1
-        if counts[seg] > 1 and seg not in {"page", "p", "category", "tag", "index", "en", "us", "uk", "de", "fr"}:
+        if counts[seg] > 1 and seg not in _allow_repeat:
             return True
-        if i > 0 and seg == segments[i - 1]:
+        if i > 0 and seg == segments[i - 1] and seg not in _allow_repeat:
             return True
     return False
 
@@ -158,15 +168,14 @@ def is_probably_page(url: str) -> bool:
     if has_recursive_path_loop(url):
         return False
 
-    # Check path segments
+    # Blocked path segments — EXACT MATCH ONLY so /api-docs/, /apiary/, /sign-in/
+    # are not blocked by the "api" or "in" entries.
+    _BLOCKED_SEGMENTS = {
+        "wp-json", "wp-admin", "feed", "cdn-cgi", "api", "xmlrpc.php",
+        "login", "signup", "register", "logout", "auth", "cart", "checkout",
+    }
     path_segments = [s for s in path.split("/") if s]
-    if any(
-        seg in (
-            "wp-json", "wp-admin", "feed", "cdn-cgi", "api", "xmlrpc.php",
-            "login", "signup", "register", "logout", "auth", "cart", "checkout"
-        )
-        for seg in path_segments
-    ):
+    if any(seg in _BLOCKED_SEGMENTS for seg in path_segments):
         return False
 
     dot = path.rfind(".")
@@ -209,6 +218,8 @@ def absolute_url(base: str, href: str) -> str | None:
         return None
     href = href.strip()
     if not href or href.startswith(("#", "mailto:", "tel:", "javascript:", "data:", "sms:")):
+        return None
+    if href.lower().startswith(("/mailto:", "/tel:", "/javascript:")):
         return None
 
     # Handle malformed hrefs like "www.domain.com/foo" missing scheme

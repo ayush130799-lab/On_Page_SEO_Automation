@@ -26,6 +26,9 @@ logger = logging.getLogger(__name__)
 PASS = "pass"
 WARNING = "warning"
 FAIL = "fail"
+#: The rule did not run because the page was never successfully retrieved. Distinct from
+#: "pass" so that a skipped check cannot inflate the score.
+SKIPPED = "skipped"
 
 
 class PageSignals(Protocol):
@@ -66,7 +69,12 @@ class RuleResult:
 
     @property
     def is_issue(self) -> bool:
-        return self.status != PASS and self.severity is not None
+        return self.status not in (PASS, SKIPPED) and self.severity is not None
+
+    @property
+    def was_evaluated(self) -> bool:
+        """False when the check could not run, so it must not contribute to the score."""
+        return self.status != SKIPPED
 
 
 @dataclass

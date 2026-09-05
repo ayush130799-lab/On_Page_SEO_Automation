@@ -25,6 +25,11 @@ findings mean for this specific page, and to write fixes a developer can apply t
 Rules you must follow:
 - Ground every statement in the supplied data. Never invent metrics, keywords, competitors or \
 facts that are not present.
+- Evaluate impact across two separate dimensions (0-100 scale):
+    1. Search Performance Impact: Potential rank lift, impression gain, and CTR improvement from GSC.
+    2. User Activity Impact: Expected lift in engagement, bounce reduction, and conversions from GA4.
+- Provide an overall Impact Score (0-100) and an explainable 'reason' citing the actual data metrics \
+(e.g., 'Page ranks position 6 with below-average CTR of 1.8% for booking queries').
 - Write suggested titles, descriptions and headings as final copy, not as instructions.
 - Respect the documented length limits: titles 30-60 characters, meta descriptions 70-160.
 - Prioritise by business consequence, using the supplied traffic and conversion figures. A fix on \
@@ -33,12 +38,30 @@ a page with real traffic matters more than the same fix on a page with none.
 manufacturing work.
 - Implementation guidance should name the concrete artefact to edit (template, component, CMS \
 field, schema block) as far as the data allows.
+- **Search intent (Phase 2):** Classify the page intent as one of: informational | navigational \
+| commercial | transactional | local. Provide an intent_confidence (0-1). If the top GSC queries \
+reach this page for a fundamentally different intent than the page's apparent purpose (e.g. a \
+booking page ranking for informational queries), set intent_mismatch to true and write a concise \
+mismatch_explanation citing the actual queries.
+- **Keyword tiers (Phase 2):** Generate keyword_tiers — a list of keyword suggestions across 5 \
+tiers. Each entry needs: keyword (string), tier (primary|secondary|long_tail|semantic|question), \
+rationale (one sentence). Aim for 1-3 primary, 3-5 secondary, 3-5 long_tail, 3-5 semantic \
+entities, and 2-4 question keywords. Base suggestions on the page's content, GSC queries, and \
+business intent.
 
 Respond with a single JSON object and nothing else. It must have exactly these keys:
   summary                 string
-  search_intent           string: informational | commercial | transactional | navigational
+  search_intent           string: informational | navigational | commercial | transactional | local
+  intent_confidence       number 0-1
+  intent_mismatch         boolean
+  mismatch_explanation    string or null
   content_quality_score   number 0-100
   topic_coverage_score    number 0-100
+  search_impact_score     number 0-100
+  user_activity_score     number 0-100
+  impact_score            number 0-100
+  reason                  string (data-backed explanation of why fixing this page matters)
+  keyword_tiers           array of objects: keyword, tier, rationale
   findings                array of objects:
                             issue, explanation, why_it_matters, recommended_fix,
                             implementation, expected_impact,

@@ -15,22 +15,36 @@ from ..registry import fail, ok, rule, warn
     fix_hint="Describe informative images in alt text; leave alt empty only for decoration.",
 )
 def check_image_alt(page):
-    """Alt text is both an accessibility requirement and the only text signal an image carries."""
+    """Alt text is both an accessibility requirement and the only text signal an image carries.
+
+    Distinguishes:
+    - missing_alt_count: alt attribute completely absent (a genuine oversight).
+    - empty_alt_count: alt="" intentionally set (marks a decorative image; this is correct).
+    Only the truly-missing count contributes to the failure score.
+    """
     total = getattr(page, "image_count", 0) or 0
     missing = getattr(page, "missing_alt_count", 0) or 0
+    decorative = getattr(page, "empty_alt_count", 0) or 0
 
     if total == 0:
         return ok("No images found.")
     if missing == 0:
-        return ok(f"All {total} images have alt text.")
+        decorative_note = f" ({decorative} marked decorative with alt=\"\".)" if decorative else ""
+        return ok(f"All {total} images have alt text or are marked decorative.{decorative_note}")
 
     coverage = round(100 * (total - missing) / total)
     severity = Severity.HIGH if missing / total > 0.5 else Severity.MEDIUM
+    decorative_note = f" ({decorative} intentionally decorative.)" if decorative else ""
     return fail(
-        f"{missing} of {total} images are missing alt text.",
+        f"{missing} of {total} images are missing alt text.{decorative_note}",
         score=coverage,
         severity=severity,
-        evidence={"images": total, "missing_alt": missing, "coverage_percent": coverage},
+        evidence={
+            "images": total,
+            "missing_alt": missing,
+            "empty_alt_decorative": decorative,
+            "coverage_percent": coverage,
+        },
     )
 
 

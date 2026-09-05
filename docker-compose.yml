@@ -90,6 +90,8 @@ services:
   # queue can be scaled independently: `docker compose up -d --scale worker-crawl=4`.
   worker-crawl:
     <<: *backend
+    healthcheck:
+      disable: true
     command: ["celery", "-A", "app.celery_app.celery_app", "worker",
               "-Q", "crawl", "-c", "2", "-n", "crawl@%h", "--loglevel=info"]
     depends_on:
@@ -98,6 +100,8 @@ services:
 
   worker-sync:
     <<: *backend
+    healthcheck:
+      disable: true
     command: ["celery", "-A", "app.celery_app.celery_app", "worker",
               "-Q", "sync", "-c", "4", "-n", "sync@%h", "--loglevel=info"]
     depends_on:
@@ -106,6 +110,8 @@ services:
 
   worker-score:
     <<: *backend
+    healthcheck:
+      disable: true
     command: ["celery", "-A", "app.celery_app.celery_app", "worker",
               "-Q", "score", "-c", "2", "-n", "score@%h", "--loglevel=info"]
     depends_on:
@@ -114,6 +120,8 @@ services:
 
   worker-ai:
     <<: *backend
+    healthcheck:
+      disable: true
     command: ["celery", "-A", "app.celery_app.celery_app", "worker",
               "-Q", "ai", "-c", "2", "-n", "ai@%h", "--loglevel=info"]
     depends_on:
@@ -123,6 +131,8 @@ services:
   beat:
     <<: *backend
     container_name: seo_automation_beat
+    healthcheck:
+      disable: true
     command: ["celery", "-A", "app.celery_app.celery_app", "beat", "--loglevel=info"]
     depends_on:
       migrate:

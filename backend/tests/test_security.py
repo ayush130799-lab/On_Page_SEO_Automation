@@ -135,9 +135,16 @@ class TestAuthorizationBoundary:
             f"/api/websites/{website.id}/jobs",
             f"/api/dashboard/websites/{website.id}",
             f"/api/dashboard/websites/{website.id}/trends",
+            f"/api/websites/{website.id}/pages/1/debug",
         ):
             response = client.get(path, headers=headers)
             assert response.status_code == 404, f"{path} returned {response.status_code}"
+
+        assert client.get(
+            "/api/integrations/ga4/debug",
+            params={"website_id": website.id},
+            headers=headers,
+        ).status_code == 404
 
     def test_a_foreign_page_is_not_readable(self, client, db, other_site):
         _, page = other_site
@@ -381,6 +388,23 @@ class TestProductionGuards:
         with pytest.raises(RuntimeError, match="SECRET_KEY"):
             asyncio.run(run())
 
+    def test_the_app_refuses_to_start_with_the_default_admin_password(self, monkeypatch):
+        """A default bootstrap admin password in production would let anyone log in as admin."""
+        import asyncio
+
+        from app.main import lifespan
+
+        monkeypatch.setattr("app.main.settings.environment", "production")
+        monkeypatch.setattr("app.main.settings.secret_key", "a-properly-random-production-secret")
+        monkeypatch.setattr("app.main.settings.bootstrap_admin_password", "password123")
+
+        async def run():
+            async with lifespan(None):
+                pass
+
+        with pytest.raises(RuntimeError, match="BOOTSTRAP_ADMIN_PASSWORD"):
+            asyncio.run(run())
+
     def test_a_configured_secret_allows_startup(self, monkeypatch):
         import asyncio
 
@@ -389,6 +413,7 @@ class TestProductionGuards:
         monkeypatch.setattr("app.main.settings.environment", "production")
         monkeypatch.setattr("app.main.settings.secret_key", "a-properly-random-production-secret")
         monkeypatch.setattr("app.main.settings.bootstrap_admin_email", "")
+        monkeypatch.setattr("app.main.settings.bootstrap_admin_password", "a-properly-random-admin-password")
 
         async def run():
             async with lifespan(None):

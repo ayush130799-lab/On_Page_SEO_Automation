@@ -51,10 +51,19 @@ def aggregate_page_metrics(
     *,
     window_days: int | None = None,
     today: date | None = None,
+    until: date | None = None,
 ) -> dict[int, dict[str, Any]]:
     """Return ``{page_id: metrics}`` summed/averaged across the lookback window.
 
     Pages with no metric rows are returned with zeroed values so callers never need a null check.
+
+    ``until`` is an exclusive upper bound and defaults to unset — every pre-existing call site
+    wants "the trailing window as of right now", where an upper bound would be a no-op since there
+    is no future data yet. It exists for callers measuring a window that ends in the *past* (the
+    post-deployment validation experiments in ``app.services.experiments`` are the only current
+    user): without it, a "7 days before deploy" baseline computed after enough time has passed
+    would silently absorb every row *after* deploy too, since ``date >= since`` alone has no
+    ceiling — quietly corrupting the comparison the caller thinks it is making.
     """
     result: dict[int, dict[str, Any]] = {pid: dict(EMPTY_METRICS) for pid in page_ids}
     if not page_ids:
@@ -64,6 +73,9 @@ def aggregate_page_metrics(
 
     for chunk in _chunks(list(page_ids)):
         # ── GA4: user activity and business value ───────────────────────────
+        ga4_conditions = [GA4Metric.page_id.in_(chunk), GA4Metric.date >= since]
+        if until is not None:
+            ga4_conditions.append(GA4Metric.date < until)
         ga4_rows = db.execute(
             select(
                 GA4Metric.page_id,
@@ -73,7 +85,7 @@ def aggregate_page_metrics(
                 func.sum(GA4Metric.conversions),
                 func.sum(GA4Metric.revenue),
             )
-            .where(GA4Metric.page_id.in_(chunk), GA4Metric.date >= since)
+            .where(*ga4_conditions)
             .group_by(GA4Metric.page_id)
         ).all()
         for page_id, users, sessions, engagement, conversions, revenue in ga4_rows:
@@ -85,6 +97,9 @@ def aggregate_page_metrics(
             entry["revenue"] = float(revenue or 0.0)
 
         # ── GSC: search demand and current visibility ───────────────────────
+        gsc_conditions = [GSCMetric.page_id.in_(chunk), GSCMetric.date >= since]
+        if until is not None:
+            gsc_conditions.append(GSCMetric.date < until)
         gsc_rows = db.execute(
             select(
                 GSCMetric.page_id,
@@ -92,7 +107,7 @@ def aggregate_page_metrics(
                 func.sum(GSCMetric.impressions),
                 func.avg(GSCMetric.position),
             )
-            .where(GSCMetric.page_id.in_(chunk), GSCMetric.date >= since)
+            .where(*gsc_conditions)
             .group_by(GSCMetric.page_id)
         ).all()
         for page_id, clicks, impressions, position in gsc_rows:

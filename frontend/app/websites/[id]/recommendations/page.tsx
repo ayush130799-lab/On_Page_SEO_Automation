@@ -108,14 +108,19 @@ function Recommendations() {
         title="AI recommendations"
         subtitle="Only pages that earn the cost are sent to the model."
         actions={
-          <button
-            type="button"
-            onClick={() => void analyse()}
-            disabled={running || Boolean(aiUnavailable)}
-            className="btn-primary"
-          >
-            {running ? "Analysing…" : "Run analysis"}
-          </button>
+          <div className="flex items-center gap-2">
+            <Link href={`/websites/${websiteId}/roadmap`} className="btn-secondary">
+              Roadmap
+            </Link>
+            <button
+              type="button"
+              onClick={() => void analyse()}
+              disabled={running || Boolean(aiUnavailable)}
+              className="btn-primary"
+            >
+              {running ? "Analysing…" : "Run analysis"}
+            </button>
+          </div>
         }
       />
 
@@ -236,7 +241,38 @@ function Recommendations() {
                     >
                       {displayPath(item.url)}
                     </Link>
+                    {item.search_intent && (
+                      <span className="inline-block mt-1 mr-2 text-xs font-medium px-2 py-0.5 rounded bg-sky-500/10 text-sky-300 border border-sky-500/20">
+                        Intent: {item.search_intent}
+                      </span>
+                    )}
                     <p className="mt-1 text-sm text-slate-400">{item.summary}</p>
+
+                    {item.reason && (
+                      <div className="mt-2 rounded-md bg-slate-900/60 border border-slate-800 p-2.5 text-xs text-slate-300">
+                        <span className="font-semibold text-slate-400">Why this matters: </span>
+                        {item.reason}
+                      </div>
+                    )}
+
+                    {/* Dual-Impact Metrics */}
+                    <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs">
+                      {item.search_impact_score !== undefined && item.search_impact_score !== null && (
+                        <span className="rounded bg-indigo-500/15 px-2 py-0.5 text-indigo-300 border border-indigo-500/30">
+                          Search Impact: <strong className="font-semibold">{Math.round(item.search_impact_score)}/100</strong>
+                        </span>
+                      )}
+                      {item.user_activity_score !== undefined && item.user_activity_score !== null && (
+                        <span className="rounded bg-cyan-500/15 px-2 py-0.5 text-cyan-300 border border-cyan-500/30">
+                          User Activity: <strong className="font-semibold">{Math.round(item.user_activity_score)}/100</strong>
+                        </span>
+                      )}
+                      {item.impact_score !== undefined && item.impact_score !== null && (
+                        <span className="rounded bg-emerald-500/15 px-2 py-0.5 text-emerald-300 border border-emerald-500/30">
+                          Overall Impact: <strong className="font-semibold">{Math.round(item.impact_score)}/100</strong>
+                        </span>
+                      )}
+                    </div>
 
                     {item.suggested_title && (
                       <p className="mt-2 text-sm">
@@ -253,19 +289,21 @@ function Recommendations() {
 
                   <div className="flex shrink-0 flex-col items-end gap-1.5 text-xs">
                     <span
-                      className={`chip ${
-                        item.priority === "critical"
+                      className={`chip font-semibold ${
+                        item.priority === "critical" || item.priority === "P0"
                           ? "bg-rose-500/15 text-rose-300 ring-rose-500/30"
-                          : item.priority === "high"
+                          : item.priority === "high" || item.priority === "P1"
                             ? "bg-orange-500/15 text-orange-300 ring-orange-500/30"
-                            : "bg-slate-500/15 text-slate-400 ring-slate-500/30"
+                            : item.priority === "medium" || item.priority === "P2"
+                              ? "bg-amber-500/15 text-amber-300 ring-amber-500/30"
+                              : "bg-slate-500/15 text-slate-400 ring-slate-500/30"
                       }`}
                     >
-                      {item.priority}
+                      {item.priority?.toUpperCase()}
                     </span>
                     <span className="text-slate-500">{item.finding_count} findings</span>
                     {item.confidence !== null && (
-                      <span className="text-slate-500">
+                      <span className="text-slate-400">
                         {formatPercent(item.confidence, 0)} confidence
                       </span>
                     )}

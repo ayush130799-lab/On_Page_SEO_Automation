@@ -22,6 +22,13 @@ import type {
   Website,
   WebsiteOverview,
   WeightResponse,
+  RoadmapResponse,
+  PriorityMatrixRow,
+  CompetitorAnalysisResponse,
+  GitHubEventItem,
+  ExperimentAccuracyReport,
+  ExperimentDetail,
+  ExperimentListItem,
 } from "./types";
 
 export const API_BASE =
@@ -379,7 +386,7 @@ export const api = {
 
   github: {
     events: (websiteId: number, limit = 20) =>
-      request<{ items: Record<string, unknown>[] }>(
+      request<{ items: GitHubEventItem[] }>(
         `/api/websites/${websiteId}/github/events`,
         { query: { limit } },
       ),
@@ -400,4 +407,60 @@ export const api = {
         { id: string; check_type: string; category: string; title: string; weight: number }[]
       >("/api/seo/rules"),
   },
+
+  roadmap: {
+    get: (websiteId: number) =>
+      request<RoadmapResponse>(`/api/websites/${websiteId}/roadmap`),
+    generate: (websiteId: number) =>
+      request<RoadmapResponse>(`/api/websites/${websiteId}/roadmap/generate`, { method: "POST" }),
+    priorityMatrix: (websiteId: number) =>
+      request<{ website_id: number; total: number; items: PriorityMatrixRow[] }>(
+        `/api/websites/${websiteId}/priority-matrix`,
+      ),
+  },
+
+  competitors: {
+    status: () =>
+      request<{ configured: boolean }>("/api/serp/status"),
+    analyse: (
+      websiteId: number,
+      pageId: number,
+      params: { keyword?: string; wait?: boolean } = { wait: true },
+    ) =>
+      request<{
+        status: string;
+        keyword: string;
+        analysis_id?: number;
+        fetched_count?: number;
+        failed_count?: number;
+        paa_count?: number;
+        missing_subtopics?: string[];
+        reason?: string;
+      }>(`/api/websites/${websiteId}/pages/${pageId}/competitors/analyse`, {
+        method: "POST",
+        body: params,
+      }),
+    get: (websiteId: number, pageId: number) =>
+      request<CompetitorAnalysisResponse>(
+        `/api/websites/${websiteId}/pages/${pageId}/competitors`,
+      ),
+  },
+
+  experiments: {
+    list: (websiteId: number, query: { status?: string; limit?: number } = {}) =>
+      request<{ items: ExperimentListItem[] }>(
+        `/api/websites/${websiteId}/experiments`,
+        { query },
+      ),
+    get: (websiteId: number, experimentId: number) =>
+      request<ExperimentDetail>(`/api/websites/${websiteId}/experiments/${experimentId}`),
+    accuracy: (websiteId: number) =>
+      request<ExperimentAccuracyReport>(`/api/websites/${websiteId}/experiments/accuracy`),
+    runDueCheckpoints: (websiteId: number) =>
+      request<{ measured: number; experiments_completed: number; errors: string[] }>(
+        `/api/websites/${websiteId}/experiments/run-due-checkpoints`,
+        { method: "POST" },
+      ),
+  },
 };
+

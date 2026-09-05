@@ -9,7 +9,7 @@ from typing import Any, Iterable, Sequence
 
 from ...models.enums import Severity
 from . import rules  # noqa: F401  (importing registers every rule)
-from .registry import PASS, RuleResult, registry
+from .registry import SKIPPED, RuleResult, registry
 from .scoring import (
     calculate_score,
     determine_category,
@@ -122,21 +122,36 @@ def audit_page(page: Any, weights: dict[str, float] | None = None) -> PageAuditR
     resolved = weights if weights is not None else resolve_weights()
     results = []
     
-    status_code = getattr(page, "status_code", 200) or 200
+    # `or 200` here would turn status 0 - a request that never completed - into a healthy page,
+    # and the whole rule set would then run against an empty document, manufacturing a dozen
+    # "missing title/H1/content" issues for a site that was merely unreachable.
+    raw_status = getattr(page, "status_code", None)
+    status_code = 200 if raw_status is None else raw_status
     is_200 = status_code == 200
 
+    # A page whose fetch failed carries no DOM at all; only the status rule can say anything
+    # truthful about it.
+    usable = getattr(page, "is_usable", True)
+    evaluable = is_200 and usable
+
     for rule_obj in registry.all():
-        # Non-200 pages (404s, 500s, 3xx redirects) should only be evaluated by status and redirect rules
-        if not is_200 and rule_obj.id not in {"http_status", "redirect_chain"}:
+        # Non-200 pages (404s, 500s, 3xx redirects) and failed fetches are only evaluated by the
+        # status and redirect rules - every other check would be describing a document we never
+        # successfully retrieved.
+        if not evaluable and rule_obj.id not in {"http_status", "redirect_chain"}:
             results.append(
                 RuleResult(
                     rule_id=rule_obj.id,
                     check_type=rule_obj.check_type,
                     category=rule_obj.category,
                     title=rule_obj.title,
-                    status=PASS,
-                    score=100.0,
-                    details=f"Check skipped for HTTP {status_code} page.",
+                    status=SKIPPED,
+                    score=0.0,
+                    details=(
+                        f"Check skipped: HTTP {status_code}"
+                        + ("" if usable else " and no document was retrieved")
+                        + "."
+                    ),
                 )
             )
         else:

@@ -94,6 +94,9 @@ class JobType(StrEnum):
     PRIORITY_SCORING = "priority_scoring"
     AI_ANALYSIS = "ai_analysis"
     ROLLUP = "rollup"
+    GITHUB_PR_ANALYSIS = "github_pr_analysis"
+    COMPETITOR_ANALYSIS = "competitor_analysis"
+    EXPERIMENT_CHECKPOINT = "experiment_checkpoint"
 
 
 #: Numeric ranking used for ordering and for the severity component of the priority score.

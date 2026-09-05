@@ -25,6 +25,7 @@ from ...models import (
     Severity,
     severity_rank,
 )
+from ...models.intent import PageIntentProfile
 from ...schemas.common import Page as PageEnvelope
 from ...schemas.page import (
     HistoryPoint,
@@ -197,6 +198,7 @@ def list_pages(
     page_ids = [row.id for row in rows]
     metrics = aggregate_page_metrics(db, page_ids, window_days=window)
     top_issues = _top_issues_for(db, page_ids)
+    intent_map = _intent_for(db, page_ids)
 
     items = []
     for row in rows:
@@ -211,6 +213,10 @@ def list_pages(
         item.ctr = values.get("ctr")
         item.position = values.get("position")
         item.top_issues = top_issues.get(row.id, [])
+        intent = intent_map.get(row.id)
+        if intent:
+            item.search_intent = intent.get("intent")
+            item.intent_mismatch = intent.get("mismatch", False)
         items.append(item)
 
     return PageEnvelope[PageListItem](total=total, limit=limit, offset=offset, items=items)
@@ -234,6 +240,30 @@ def _top_issues_for(db: Session, page_ids: list[int], per_page: int = 3) -> dict
         page_id: [title for _, title in sorted(entries, key=lambda e: -e[0])[:per_page]]
         for page_id, entries in grouped.items()
     }
+
+
+def _intent_for(db: Session, page_ids: list[int]) -> dict[int, dict]:
+    """Batch-fetch intent profile fields for a list of page IDs (Phase 2).
+
+    Returns a dict keyed by page_id with 'intent' and 'mismatch' values.
+    Falls back to an empty dict if the table doesn't exist yet.
+    """
+    if not page_ids:
+        return {}
+    try:
+        rows = db.execute(
+            select(
+                PageIntentProfile.page_id,
+                PageIntentProfile.detected_intent,
+                PageIntentProfile.intent_mismatch,
+            ).where(PageIntentProfile.page_id.in_(page_ids))
+        ).all()
+        return {
+            row.page_id: {"intent": row.detected_intent, "mismatch": row.intent_mismatch}
+            for row in rows
+        }
+    except Exception:
+        return {}
 
 
 @router.get("/pages/{page_id}", response_model=PageDetailResponse)
@@ -306,6 +336,10 @@ def get_page(page_id: int, user: CurrentUser, db: DbSession, history_days: int =
             "priority": recommendation_row.priority,
             "confidence": recommendation_row.confidence,
             "expected_impact": recommendation_row.expected_impact,
+            "search_impact_score": recommendation_row.search_impact_score,
+            "user_activity_score": recommendation_row.user_activity_score,
+            "impact_score": recommendation_row.impact_score,
+            "reason": recommendation_row.reason,
             "suggested_title": recommendation_row.suggested_title,
             "suggested_meta_description": recommendation_row.suggested_meta_description,
             "payload": recommendation_row.payload,

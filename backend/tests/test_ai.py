@@ -142,6 +142,7 @@ class FakeProvider:
 def fake_provider(monkeypatch):
     provider = FakeProvider()
     monkeypatch.setattr("app.services.ai.recommender.get_provider", lambda name=None: provider)
+    monkeypatch.setattr("app.services.ai.recommender.get_active_providers", lambda: [provider])
     monkeypatch.setattr("app.config.settings.ai_enabled", True)
     return provider
 
@@ -367,7 +368,7 @@ class TestSelectionGate:
         assert "healthy" in decisions[0].reason
 
     def test_high_scoring_pages_are_selected_with_default_threshold(self, db, site):
-        page = add_page(db, site, "/high_score", seo_score=96.0, severity=Severity.LOW, issues=1,
+        page = add_page(db, site, "/high_score", seo_score=85.0, severity=Severity.LOW, issues=1,
                         priority_score=95.0)
         db.commit()
 
@@ -625,6 +626,7 @@ class TestAnalyseWebsite:
     async def test_analysis_is_a_no_op_without_a_provider_key(self, db, site, monkeypatch):
         monkeypatch.setattr("app.config.settings.ai_enabled", True)
         monkeypatch.setattr("app.services.ai.recommender.get_provider", lambda name=None: None)
+        monkeypatch.setattr("app.services.ai.recommender.get_active_providers", lambda: [])
         add_page(db, site, "/a", seo_score=10.0, issues=9)
         db.commit()
 
@@ -748,3 +750,41 @@ class TestRecommendationApi:
         assert client.get(
             f"/api/websites/{site.id}/recommendations", headers=auth_headers(stranger)
         ).status_code == 404
+
+    def test_dual_impact_scores_and_reason_persisted_and_returned_in_api(
+        self, client, db, site, member_user
+    ):
+        page = add_page(db, site, "/booking", priority_score=92.0)
+        rec = AIRecommendation(
+            website_id=site.id,
+            page_id=page.id,
+            provider="fake",
+            model="test-model",
+            status="completed",
+            summary="High priority booking intent optimization",
+            search_intent="transactional",
+            priority="critical",
+            confidence=0.88,
+            expected_impact="High CTR lift on SERPs",
+            search_impact_score=94.0,
+            user_activity_score=86.0,
+            impact_score=91.5,
+            reason="High impressions with below average CTR for booking queries",
+            payload={"findings": []},
+        )
+        db.add(rec)
+        db.commit()
+
+        res = client.get(
+            f"/api/websites/{site.id}/recommendations", headers=auth_headers(member_user)
+        )
+        assert res.status_code == 200
+        items = res.json()["items"]
+        assert len(items) == 1
+        item = items[0]
+        assert item["search_impact_score"] == 94.0
+        assert item["user_activity_score"] == 86.0
+        assert item["impact_score"] == 91.5
+        assert item["reason"] == "High impressions with below average CTR for booking queries"
+        assert item["search_intent"] == "transactional"
+

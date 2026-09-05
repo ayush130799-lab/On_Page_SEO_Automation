@@ -144,6 +144,141 @@ def run_scoring_task(self, website_id: int, window_days: int | None = None) -> d
         db.close()
 
 
+@celery_app.task(name="seo.github.analyse_pr", bind=True, max_retries=2, default_retry_delay=30)
+def run_github_pr_analysis_task(
+    self, website_id: int, event_type: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    """Analyse one pull_request webhook delivery: diff, predict, comment, gate.
+
+    Split from the webhook route so a slow or rate-limited GitHub API call never blocks the
+    webhook response — GitHub's own delivery UI treats a slow response as a near-failure and
+    will retry it, which would otherwise risk double-posting the same PR comment.
+    """
+    from ...models import Website
+    from ..github.pr_handler import process_pull_request
+
+    db = SessionLocal()
+    try:
+        website = db.get(Website, website_id)
+        if website is None:
+            return {"status": "skipped", "reason": "website_not_found"}
+
+        with tracked_job(
+            db, JobType.GITHUB_PR_ANALYSIS, website_id=website_id, queue="ai",
+            payload={"event_type": event_type, "pr_number": payload.get("number")},
+        ) as job:
+            outcome = asyncio.run(
+                process_pull_request(db, event_type=event_type, payload=payload, website=website)
+            )
+            result = {
+                "website_id": website_id,
+                "action": outcome.action,
+                "reason": outcome.reason,
+                "risk_level": outcome.risk_level,
+                "expected_impact": outcome.expected_impact,
+                "comment_posted": outcome.comment_posted,
+            }
+            job.result = result
+            return result
+    except Exception as exc:
+        logger.exception(
+            "GitHub PR analysis failed for website %s: %s", website_id, exc
+        )
+        raise self.retry(exc=exc)
+    finally:
+        db.close()
+
+
+@celery_app.task(name="seo.serp.analyse_competitors", bind=True, max_retries=1, default_retry_delay=30)
+def run_competitor_analysis_task(
+    self, website_id: int, keyword: str, page_id: int | None = None
+) -> dict[str, Any]:
+    """Run one SerpApi lookup plus up to N competitor-page fetches for a keyword.
+
+    max_retries=1 (not the usual 2-3): a failed SerpApi call or a blocked competitor fetch is
+    rarely transient in the way a database hiccup is, and retrying a paid SerpApi call
+    automatically risks double-billing for what is often a genuine, non-retryable failure
+    (invalid key, exhausted quota).
+    """
+    from ...models import Website
+    from ..serp import analyse_competitors
+
+    db = SessionLocal()
+    try:
+        website = db.get(Website, website_id)
+        if website is None:
+            return {"status": "skipped", "reason": "website_not_found"}
+
+        with tracked_job(
+            db, JobType.COMPETITOR_ANALYSIS, website_id=website_id, queue="ai",
+            payload={"keyword": keyword, "page_id": page_id},
+        ) as job:
+            outcome = asyncio.run(
+                analyse_competitors(db, website, keyword=keyword, page_id=page_id)
+            )
+            result = {
+                "website_id": website_id,
+                "analysis_id": outcome.analysis_id,
+                "keyword": outcome.keyword,
+                "fetched_count": outcome.fetched_count,
+                "failed_count": outcome.failed_count,
+                "paa_count": outcome.paa_count,
+                "error": outcome.error,
+            }
+            job.result = result
+            return result
+    except Exception as exc:
+        logger.exception(
+            "Competitor analysis failed for website %s, keyword %r: %s", website_id, keyword, exc
+        )
+        raise self.retry(exc=exc)
+    finally:
+        db.close()
+
+
+@celery_app.task(name="seo.impact.rescore", bind=True, max_retries=2, default_retry_delay=60)
+def run_impact_rescore_task(self, website_id: int) -> dict[str, Any]:
+    """Refresh intent classification and impact-ranked recommendations for one website.
+
+    Runs after the nightly GSC/GA4 sync and priority scoring, without a crawl. GSC clicks and
+    impressions change daily; a recommendation that was P2 last week can become P0 today purely
+    because its click-through rate moved. Without this task, impact scores and keyword tiers only
+    updated on the next full crawl, which could be days away.
+    """
+    from ...models import Website
+    from ..impact.engine import score_website_recommendations
+    from ..intent import analyse_intent_for_website
+
+    db = SessionLocal()
+    try:
+        website = db.get(Website, website_id)
+        if website is None:
+            return {"status": "skipped", "reason": "website_not_found"}
+
+        with tracked_job(db, JobType.PRIORITY_SCORING, website_id=website_id, queue="score") as job:
+            intent_outcome = analyse_intent_for_website(db, website)
+            db.commit()
+            scoring_outcome = score_website_recommendations(db, website)
+            db.commit()
+
+            payload = {
+                "website_id": website_id,
+                "intent_classified": intent_outcome.classified,
+                "intent_mismatches": intent_outcome.mismatches_found,
+                "recommendations_written": scoring_outcome.recommendations_written,
+                "tier_counts": scoring_outcome.tier_counts,
+                "priority_counts": scoring_outcome.priority_counts,
+            }
+            job.result = payload
+            return payload
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Impact rescore failed for website %s: %s", website_id, exc)
+        raise self.retry(exc=exc)
+    finally:
+        db.close()
+
+
 @celery_app.task(name="seo.ai.analyse", bind=True, max_retries=1, default_retry_delay=120)
 def run_ai_task(self, website_id: int, options: dict[str, Any] | None = None) -> dict[str, Any]:
     """Run the AI recommendation stage for one website."""
@@ -196,6 +331,31 @@ def run_rollup_task(self) -> dict[str, Any]:
             return payload
     except Exception as exc:
         logger.exception("Historical rollup failed: %s", exc)
+        raise self.retry(exc=exc)
+    finally:
+        db.close()
+
+
+@celery_app.task(name="seo.experiments.check_due", bind=True, max_retries=1)
+def run_due_experiment_checkpoints_task(self) -> dict[str, Any]:
+    """§8.4: measure every SEO experiment checkpoint whose due date has arrived, across every
+    website. Extends the GSC/GA4 pipeline rather than a separate subsystem, so it runs on the
+    same daily cadence as the rest of the metrics/scoring chain."""
+    from ..experiments import run_due_checkpoints
+
+    db = SessionLocal()
+    try:
+        with tracked_job(db, JobType.EXPERIMENT_CHECKPOINT, queue="score") as job:
+            outcome = run_due_checkpoints(db)
+            payload = {
+                "measured": outcome.measured,
+                "experiments_completed": outcome.experiments_completed,
+                "errors": outcome.errors[:10],
+            }
+            job.result = payload
+            return payload
+    except Exception as exc:
+        logger.exception("Experiment checkpoint sweep failed: %s", exc)
         raise self.retry(exc=exc)
     finally:
         db.close()
@@ -274,6 +434,11 @@ def score_all_websites() -> dict[str, Any]:
         ).all()
         for website_id in website_ids:
             run_scoring_task.delay(website_id, None)
+            # Chained rather than parallel scheduling: impact scoring reads the priority score
+            # and intent depends on the GSC queries the sync stage just wrote, so both should
+            # trail the scoring task rather than race it. Celery has no built-in "after this
+            # other task" primitive without chains, so this queues a fixed delay instead.
+            run_impact_rescore_task.apply_async(args=[website_id], countdown=120)
         return {"queued": len(website_ids)}
     finally:
         db.close()

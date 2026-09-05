@@ -525,6 +525,147 @@ class TestCrawlFailureDoesNotDestroyState:
         assert retired.is_active is False
 
 
+class TestFailedCrawlDoesNotFabricateMissingData:
+    """A crawl that retrieves no document must not blank out a healthy page's signals.
+
+    Overwriting title, headings, word count and links with empty values turns one timeout into a
+    page that appears to have lost all its content, and the audit then reports a dozen invented
+    "missing" issues for a site that is perfectly fine.
+    """
+
+    async def test_a_timeout_preserves_the_previous_content_signals(
+        self, db, acme, crawled, monkeypatch
+    ):
+        monkeypatch.setattr("app.config.settings.allow_local_crawl", True)
+        home = db.query(Page).filter(Page.website_id == acme.id, Page.path == "/").one()
+        title_before = home.title
+        words_before = home.word_count
+        h1_before = home.h1
+        assert title_before and words_before > 0
+
+        def dead(request):
+            raise httpx.ConnectError("connection refused")
+
+        transport = httpx.MockTransport(dead)
+        original = httpx.AsyncClient.__init__
+
+        def patched(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            return original(self, *args, **kwargs)
+
+        run = create_crawl_run(db, acme)
+        httpx.AsyncClient.__init__ = patched
+        try:
+            await run_crawl_pipeline(db, run.id)
+        finally:
+            httpx.AsyncClient.__init__ = original
+
+        db.expire_all()
+        home = db.query(Page).filter(Page.website_id == acme.id, Page.path == "/").one()
+        assert home.title == title_before
+        assert home.word_count == words_before
+        assert home.h1 == h1_before
+
+    async def test_a_500_response_preserves_content_but_records_the_status(
+        self, db, acme, crawled, monkeypatch
+    ):
+        monkeypatch.setattr("app.config.settings.allow_local_crawl", True)
+        home = db.query(Page).filter(Page.website_id == acme.id, Page.path == "/").one()
+        title_before = home.title
+        assert title_before
+
+        def broken(request):
+            return httpx.Response(500, text="<html><body>Server Error</body></html>",
+                                  headers={"content-type": "text/html"})
+
+        transport = httpx.MockTransport(broken)
+        original = httpx.AsyncClient.__init__
+
+        def patched(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            return original(self, *args, **kwargs)
+
+        run = create_crawl_run(db, acme)
+        httpx.AsyncClient.__init__ = patched
+        try:
+            await run_crawl_pipeline(db, run.id)
+        finally:
+            httpx.AsyncClient.__init__ = original
+
+        db.expire_all()
+        home = db.query(Page).filter(Page.website_id == acme.id, Page.path == "/").one()
+        # The response fact is current...
+        assert home.status_code == 500
+        # ...but the content signals are not invented.
+        assert home.title == title_before
+
+    async def test_content_captured_at_lags_last_crawled_at_after_a_failure(
+        self, db, acme, crawled, monkeypatch
+    ):
+        monkeypatch.setattr("app.config.settings.allow_local_crawl", True)
+        home = db.query(Page).filter(Page.website_id == acme.id, Page.path == "/").one()
+        captured_before = home.content_captured_at
+        assert captured_before is not None
+
+        def dead(request):
+            raise httpx.ConnectError("down")
+
+        transport = httpx.MockTransport(dead)
+        original = httpx.AsyncClient.__init__
+
+        def patched(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            return original(self, *args, **kwargs)
+
+        run = create_crawl_run(db, acme)
+        httpx.AsyncClient.__init__ = patched
+        try:
+            await run_crawl_pipeline(db, run.id)
+        finally:
+            httpx.AsyncClient.__init__ = original
+
+        db.expire_all()
+        home = db.query(Page).filter(Page.website_id == acme.id, Page.path == "/").one()
+        assert home.content_captured_at == captured_before
+        assert home.last_crawled_at >= captured_before
+        assert home.crawl_quality != "ok"
+
+    async def test_a_successful_recrawl_does_update_content(self, db, acme, crawled, monkeypatch):
+        """The preservation rule must not freeze a page that is genuinely reachable."""
+        monkeypatch.setattr("app.config.settings.allow_local_crawl", True)
+
+        changed = dict(PAGES)
+        changed["/"] = changed["/"].replace(
+            "Acme Widgets \u2014 Industrial Fasteners And Fittings", "Acme Widgets — New Title Today"
+        )
+
+        def handler(request):
+            body = changed.get(request.url.path)
+            if body is None:
+                return httpx.Response(404, text="<html><body>Not found</body></html>",
+                                      headers={"content-type": "text/html"})
+            return httpx.Response(200, text=body, headers={"content-type": "text/html"})
+
+        transport = httpx.MockTransport(handler)
+        original = httpx.AsyncClient.__init__
+
+        def patched(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            return original(self, *args, **kwargs)
+
+        run = create_crawl_run(db, acme)
+        httpx.AsyncClient.__init__ = patched
+        try:
+            await run_crawl_pipeline(db, run.id)
+        finally:
+            httpx.AsyncClient.__init__ = original
+
+        db.expire_all()
+        home = db.query(Page).filter(Page.website_id == acme.id, Page.path == "/").one()
+        assert home.content_captured_at is not None
+        assert home.title == "Acme Widgets — New Title Today"
+
+
 class TestPerRunCrawlLimit:
     def test_a_one_off_limit_does_not_reconfigure_the_website(
         self, client, db, acme, member_user, monkeypatch

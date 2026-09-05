@@ -46,8 +46,9 @@ class Settings(BaseSettings):
     rate_limit_auth_per_minute: int = 10
     rate_limit_default_per_minute: int = 120
 
-    # ── Crawler ─────────────────────────────────────────────────────────────
-    max_pages: int = 5000
+    # Crawler ─────────────────────────────────────────────────────────────
+    # None = no artificial limit; crawl every URL the site exposes.
+    max_pages: int | None = None
     request_timeout: int = 15
     crawl_delay: float = 0.0
     concurrent_workers: int = 25
@@ -66,7 +67,8 @@ class Settings(BaseSettings):
     render_concurrency: int = 5
     render_timeout_ms: int = 6000
     render_min_text_length: int = 400
-    render_max_pages: int = 150
+    # None = no render budget cap; render every page that needs it.
+    render_max_pages: int | None = None
 
     # ── SEO scoring weights (per rule check id) ─────────────────────────────
     # Consumed by app.services.seo.scoring. Overridable per website via settings.
@@ -142,7 +144,24 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
 
-    ai_max_pages: int = 5000
+    # ── Tiered AI cost model (roadmap 12.4) ─────────────────────────────
+    # These are page *budgets*, not proportions: a 10,000-page site costs the same as a
+    # 500-page one, because the crawler ranks by impact first and only the top N reach a
+    # model. The previous default of 5,000 with a threshold of 100.0 meant every audited
+    # page with a single issue was sent to the LLM, which is the pattern 12.3 forbids.
+    ai_max_pages: int = 200
+    #: Level 4 - a larger model for the handful of pages where being wrong is expensive.
+    ai_deep_max_pages: int = 20
+    #: Minimum impact score for a page to earn a Level 3 model call.
+    ai_impact_threshold: float = 45.0
+    #: Minimum impact score for Level 4.
+    ai_deep_impact_threshold: float = 75.0
+    #: Model used for Level 4. Falls back to openai_model when unset.
+    ai_deep_model: str = ""
+    #: Substrings marking commercially important paths, used for business relevance only when a
+    #: site has no GA4 revenue or conversion data at all. Configured per deployment - never
+    #: guessed, because a hardcoded list is wrong on somebody else's site.
+    business_value_paths: list[str] = []
     ai_concurrency: int = 5
     ai_max_content_length: int = 8000
     ai_max_retries: int = 3
@@ -169,6 +188,27 @@ class Settings(BaseSettings):
 
     github_webhook_secret: str = ""
     github_api_base: str = "https://api.github.com"
+    github_api_timeout: int = 20
+    #: Default deployment-gate mode for a newly connected repo: "off" | "warn" | "block". Never
+    #: defaults to "block" — a platform must not start failing a customer's CI on day one.
+    github_deployment_gate_default: str = "off"
+
+    # ── SERP / competitor analysis ───────────────────────────────────────────
+    # SerpApi (serpapi.com) is a licensed, paid intermediary for Google search results — used
+    # deliberately instead of scraping Google's SERP HTML directly, which violates Google's Terms
+    # of Service. Fetching the competitors' *own* public pages afterwards (to measure their word
+    # count and heading structure) is a plain HTTP GET of a public webpage, not a ToS concern.
+    serpapi_key: str = ""
+    serpapi_api_base: str = "https://serpapi.com/search"
+    serpapi_timeout: int = 30
+    serpapi_google_domain: str = "google.com"
+    serpapi_gl: str = "us"  # country
+    serpapi_hl: str = "en"  # language
+    #: How many of the top organic results to fetch and analyse. SerpApi returns more; only the
+    #: top N are worth the extra page-fetch cost.
+    competitor_top_n: int = 5
+    competitor_fetch_timeout: int = 12
+    competitor_fetch_concurrency: int = 5
 
     # ── Jobs / scheduling ───────────────────────────────────────────────────
     daily_sync_hour_utc: int = 4

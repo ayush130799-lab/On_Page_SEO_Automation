@@ -56,6 +56,8 @@ class PipelineOutcome:
     duration_seconds: float
     truncated: bool = False
     truncation_reason: str | None = None
+    intent_analysed: int = 0
+    recommendations_scored: int = 0
 
 
 # ── Crawl run lifecycle ─────────────────────────────────────────────────────
@@ -87,7 +89,8 @@ def create_crawl_run(
         github_event_id=github_event_id,
         stage="queued",
         config_snapshot={
-            "max_pages": max_pages or website.max_pages or settings.max_pages,
+            # None = no page cap; crawl the full site.
+            "max_pages": max_pages or website.max_pages or None,
             "render_mode": website.render_mode,
             "respect_robots_txt": website.respect_robots_txt,
             "include_patterns": website.include_patterns,
@@ -104,10 +107,35 @@ def create_crawl_run(
 
 
 def _snapshot_page(page: Page, extracted: ExtractedPage, seen_at: datetime) -> None:
-    """Copy the latest crawl observation onto the stable page row."""
+    """Copy the latest crawl observation onto the stable page row.
+
+    Response-level facts always describe the newest crawl. Content signals are only written when
+    the observation actually carries a document: a timeout or a 500 would otherwise blank out the
+    title, headings, word count and links of a page that is perfectly healthy, and the dashboard
+    would report a dozen invented issues for a site that was briefly unreachable.
+    """
+    # ── Always current: what the server did on this crawl ────────────────────
     page.status_code = extracted.status_code
     page.final_url = extracted.final_url or extracted.url
     page.redirect_chain = extracted.redirect_chain or None
+    page.was_rendered = extracted.was_rendered
+    page.render_error = getattr(extracted, "render_error", None)
+    page.response_time_ms = extracted.response_time_ms
+    page.content_bytes = extracted.content_bytes
+    page.content_type = getattr(extracted, "content_type", None)
+    page.crawl_error = extracted.crawl_error
+    page.crawl_quality = getattr(extracted, "crawl_quality", "ok") or "ok"
+    page.extraction_errors = getattr(extracted, "extraction_errors", None) or None
+    page.crawl_status = "failed" if extracted.crawl_error else "crawled"
+    page.last_seen_at = seen_at
+    page.last_crawled_at = seen_at
+    page.is_active = True
+
+    if not extracted.has_document:
+        # Keep whatever the last successful crawl observed. content_captured_at is left at its
+        # earlier value so the age of those signals is visible rather than implied.
+        return
+
     page.title = extracted.title
     page.meta_description = extracted.meta_description
     page.h1 = extracted.h1
@@ -115,9 +143,10 @@ def _snapshot_page(page: Page, extracted: ExtractedPage, seen_at: datetime) -> N
     page.h2_count = extracted.h2_count
     page.h3_count = extracted.h3_count
     page.canonical_url = extracted.canonical_url
+    page.canonical_raw = getattr(extracted, "canonical_raw", None)
+    page.canonical_count = getattr(extracted, "canonical_count", 0) or 0
     page.robots_directive = extracted.meta_robots
     page.x_robots_tag = getattr(extracted, "x_robots_tag", None)
-    page.content_type = getattr(extracted, "content_type", None)
     page.lang = extracted.lang
     page.hreflang = extracted.hreflang or None
     page.has_viewport = extracted.has_viewport
@@ -129,18 +158,36 @@ def _snapshot_page(page: Page, extracted: ExtractedPage, seen_at: datetime) -> N
     page.content_hash = extracted.content_hash
     page.image_count = extracted.image_count
     page.missing_alt_count = extracted.missing_alt_count
+    page.empty_alt_count = getattr(extracted, "empty_alt_count", 0) or 0
     page.internal_link_count = extracted.internal_link_count
     page.external_link_count = extracted.external_link_count
     page.broken_link_count = extracted.broken_link_count
     page.inbound_internal_links = extracted.inbound_internal_links
-    page.was_rendered = extracted.was_rendered
-    page.response_time_ms = extracted.response_time_ms
-    page.content_bytes = extracted.content_bytes
-    page.crawl_error = extracted.crawl_error
-    page.crawl_status = "failed" if extracted.crawl_error else "crawled"
-    page.last_seen_at = seen_at
-    page.last_crawled_at = seen_at
-    page.is_active = True
+    page.sponsored_link_count = getattr(extracted, "sponsored_link_count", 0) or 0
+    page.ugc_link_count = getattr(extracted, "ugc_link_count", 0) or 0
+    page.pagination_next = getattr(extracted, "pagination_next", None)
+    page.pagination_prev = getattr(extracted, "pagination_prev", None)
+    # Heading levels 4-6 and empty headings.
+    page.h4_count = getattr(extracted, "h4_count", 0) or 0
+    page.h5_count = getattr(extracted, "h5_count", 0) or 0
+    page.h6_count = getattr(extracted, "h6_count", 0) or 0
+    page.empty_heading_count = getattr(extracted, "empty_heading_count", 0) or 0
+    # Tag multiplicity - a second <title> or canonical is a real defect.
+    page.title_count = getattr(extracted, "title_count", 0) or 0
+    page.meta_description_count = getattr(extracted, "meta_description_count", 0) or 0
+    page.meta_robots_count = getattr(extracted, "meta_robots_count", 0) or 0
+    page.canonical_status = getattr(extracted, "canonical_status", None)
+    # All three word measurements, so a discrepancy can be explained rather than argued.
+    page.raw_word_count = getattr(extracted, "raw_word_count", 0) or 0
+    page.visible_word_count = getattr(extracted, "visible_word_count", 0) or 0
+    page.main_content_word_count = getattr(extracted, "main_content_word_count", 0) or 0
+    page.content_scope = getattr(extracted, "content_scope", None)
+    page.tracking_pixel_count = getattr(extracted, "tracking_pixel_count", 0) or 0
+    page.non_http_link_count = getattr(extracted, "non_http_link_count", 0) or 0
+    page.sponsored_link_count = getattr(extracted, "sponsored_link_count", 0) or 0
+    page.ugc_link_count = getattr(extracted, "ugc_link_count", 0) or 0
+    page.structured_data_formats = getattr(extracted, "structured_data_formats", None) or None
+    page.content_captured_at = seen_at
 
 
 def upsert_pages(
@@ -499,6 +546,62 @@ async def run_crawl_pipeline(
         refresh_website_summary(db, website)
         db.commit()
 
+        # ── Search intent detection, then impact scoring ────────────────────
+        # Intent first: impact scoring reads the intent profile, and a mismatch is itself one of
+        # the highest-scoring recommendations a page can carry.
+        intent_analysed = 0
+        try:
+            from .intent import analyse_intent_for_website
+
+            crawl_run.stage = "intent_analysis"
+            db.commit()
+            intent_outcome = analyse_intent_for_website(
+                db, website, crawl_run_id=crawl_run.id
+            )
+            intent_analysed = intent_outcome.classified
+            if intent_outcome.errors:
+                logger.warning(
+                    "Intent analysis had %d error(s) for website %s: %s",
+                    len(intent_outcome.errors), website.id, intent_outcome.errors[:3],
+                )
+        except Exception as intent_exc:
+            # A failure here leaves the session needing a rollback; without one every later
+            # commit in this function raises PendingRollbackError and the whole crawl is
+            # reported as failed because an optional enrichment stage did not run.
+            db.rollback()
+            logger.warning(
+                "Intent analysis failed for website %s: %s", website.id, intent_exc
+            )
+
+        recommendations_scored = 0
+        try:
+            from .impact.engine import score_website_recommendations
+
+            crawl_run.stage = "impact_scoring"
+            db.commit()
+            scoring_outcome = score_website_recommendations(
+                db, website, crawl_run_id=crawl_run.id
+            )
+            recommendations_scored = scoring_outcome.recommendations_written
+            db.commit()
+            logger.info(
+                "Impact scoring for website %s: %d recommendations across %d pages (tiers %s)",
+                website.id,
+                recommendations_scored,
+                scoring_outcome.pages_scored,
+                scoring_outcome.tier_counts,
+            )
+        except Exception as scoring_exc:
+            db.rollback()
+            logger.warning(
+                "Impact scoring failed for website %s: %s", website.id, scoring_exc
+            )
+
+        # The stage must advance whether or not the optional stages above succeeded — leaving it
+        # at the name of a stage that failed made every successful crawl look stuck.
+        crawl_run.stage = "completed"
+        db.commit()
+
         logger.info(
             "Crawl run %s finished: %d pages, avg score %s, %d issues (%d critical) in %.1fs",
             crawl_run.id,
@@ -519,6 +622,8 @@ async def run_crawl_pipeline(
             duration_seconds=crawl.duration_seconds,
             truncated=crawl.truncated,
             truncation_reason=crawl.truncation_reason,
+            intent_analysed=intent_analysed,
+            recommendations_scored=recommendations_scored,
         )
 
     except Exception as exc:

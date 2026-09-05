@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from .integration import Integration
     from .job import Job
     from .page import Page
+    from .roadmap import SeoRoadmap
     from .user import WebsiteMember
 
 
@@ -76,5 +77,8 @@ class Website(TimestampMixin, Base):
         back_populates="website", cascade="all, delete-orphan"
     )
     jobs: Mapped[list["Job"]] = relationship(
+        back_populates="website", cascade="all, delete-orphan"
+    )
+    roadmaps: Mapped[list["SeoRoadmap"]] = relationship(
         back_populates="website", cascade="all, delete-orphan"
     )
