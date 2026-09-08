@@ -87,7 +87,7 @@ def start_crawl(
     active = None
     now = datetime.now(timezone.utc)
     for run in active_runs:
-        ref_time = run.started_at or run.created_at
+        ref_time = run.updated_at or run.started_at or run.created_at
         if ref_time:
             ref_utc = ref_time.replace(tzinfo=timezone.utc) if ref_time.tzinfo is None else ref_time
             if (now - ref_utc).total_seconds() > 300:

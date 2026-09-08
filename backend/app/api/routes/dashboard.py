@@ -385,7 +385,7 @@ def website_overview(
     now_utc = datetime.now(timezone.utc)
     for run in latest_runs:
         if run.status in (RunStatus.RUNNING, RunStatus.QUEUED):
-            ref = run.started_at or run.created_at
+            ref = run.updated_at or run.started_at or run.created_at
             if ref:
                 ref_utc = ref.replace(tzinfo=timezone.utc) if ref.tzinfo is None else ref
                 if (now_utc - ref_utc).total_seconds() > 300:

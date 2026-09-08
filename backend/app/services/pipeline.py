@@ -512,6 +512,7 @@ async def run_crawl_pipeline(
             crawl_run.pages_rendered = progress.pages_rendered
             crawl_run.pages_failed = progress.pages_failed
             crawl_run.stage = progress.stage
+            crawl_run.updated_at = _now()
             # Crawling is the first 60% of a run; auditing and scoring make up the rest.
             denom = max(1, progress.urls_discovered or progress.pages_crawled)
             crawl_run.progress_percent = round(
@@ -527,6 +528,7 @@ async def run_crawl_pipeline(
         crawl_run.pages_failed = crawl.pages_failed
         crawl_run.stage = "auditing"
         crawl_run.progress_percent = 60.0
+        crawl_run.updated_at = _now()
         db.commit()
 
         weights = resolve_weights(_website_weight_overrides(db, website))
@@ -534,6 +536,7 @@ async def run_crawl_pipeline(
 
         crawl_run.stage = "persisting"
         crawl_run.progress_percent = 80.0
+        crawl_run.updated_at = _now()
         db.commit()
 
         pages_by_hash = upsert_pages(db, website, crawl.pages)
