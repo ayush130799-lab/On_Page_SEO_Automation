@@ -157,20 +157,28 @@ function WebsiteDashboard() {
   // Follow a running crawl and refresh the table when it finishes.
   useEffect(() => {
     if (!activeCrawl) return;
+    const crawlId = activeCrawl.id;
     const timer = setInterval(async () => {
       try {
-        const run = await api.crawls.get(activeCrawl.id);
-        setActiveCrawl(run.status === "running" || run.status === "queued" ? run : null);
-        if (run.status === "completed") {
-          void loadOverview();
-          void loadPages();
+        const run = await api.crawls.get(crawlId);
+        if (run.status === "running" || run.status === "queued") {
+          setActiveCrawl(run);
+        } else {
+          setActiveCrawl(null);
+          if (run.status === "completed") {
+            void loadOverview();
+            void loadPages();
+          } else if (run.status === "failed") {
+            setError(run.error || "Crawl did not complete successfully.");
+            void loadOverview();
+          }
         }
       } catch {
         setActiveCrawl(null);
       }
-    }, 3000);
+    }, 2500);
     return () => clearInterval(timer);
-  }, [activeCrawl, loadOverview, loadPages]);
+  }, [activeCrawl?.id, loadOverview, loadPages]);
 
   const toggleSort = (key: SortKey) => {
     if (sort === key) {
@@ -294,9 +302,13 @@ function WebsiteDashboard() {
               <div className="min-w-64 flex-1">
                 <ProgressBar
                   value={activeCrawl.progress_percent}
-                  label={`${activeCrawl.stage ?? activeCrawl.status} · ${formatNumber(
-                    activeCrawl.pages_crawled,
-                  )} of ${formatNumber(activeCrawl.urls_discovered)} URLs crawled`}
+                  label={
+                    activeCrawl.urls_discovered > 0
+                      ? `${activeCrawl.stage ?? activeCrawl.status} · ${formatNumber(
+                          activeCrawl.pages_crawled,
+                        )} of ${formatNumber(activeCrawl.urls_discovered)} URLs crawled`
+                      : `${activeCrawl.stage ?? activeCrawl.status} · discovering sitemap & URLs…`
+                  }
                 />
               </div>
               <button

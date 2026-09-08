@@ -38,7 +38,7 @@ from .seo import PageAuditResult, aggregate_scores, audit_site, resolve_weights
 logger = logging.getLogger(__name__)
 
 #: How often (in crawled pages) progress is written back to the crawl_runs row.
-PROGRESS_FLUSH_EVERY = 25
+PROGRESS_FLUSH_EVERY = 5
 
 
 def _now() -> datetime:
@@ -502,7 +502,8 @@ async def run_crawl_pipeline(
 
         async def on_progress(progress: CrawlProgress) -> None:
             nonlocal last_flush
-            if progress.pages_crawled - last_flush < PROGRESS_FLUSH_EVERY:
+            is_new_discovery = progress.urls_discovered > (crawl_run.urls_discovered or 0)
+            if not is_new_discovery and (progress.pages_crawled - last_flush < PROGRESS_FLUSH_EVERY):
                 return
             last_flush = progress.pages_crawled
             crawl_run.urls_discovered = progress.urls_discovered
@@ -512,8 +513,9 @@ async def run_crawl_pipeline(
             crawl_run.pages_failed = progress.pages_failed
             crawl_run.stage = progress.stage
             # Crawling is the first 60% of a run; auditing and scoring make up the rest.
+            denom = max(1, progress.urls_discovered or progress.pages_crawled)
             crawl_run.progress_percent = round(
-                min(60.0, 60.0 * progress.pages_crawled / max(1, progress.urls_discovered)), 1
+                min(60.0, 60.0 * progress.pages_crawled / denom), 1
             )
             db.commit()
 

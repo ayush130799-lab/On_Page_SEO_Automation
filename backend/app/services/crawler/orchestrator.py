@@ -396,6 +396,7 @@ class Crawler:
             headers=headers,
         ) as client:
             await self._discover(client)
+            await self._report(on_progress)
 
             limiter = HostRateLimiter(self.config.rate_limit_per_second)
             worker_count = max(1, min(self.config.concurrency, max(1, len(self.enqueued))))

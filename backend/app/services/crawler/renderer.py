@@ -41,14 +41,20 @@ def needs_rendering(html: str, *, render_mode: str = "auto", min_text_length: in
     if not html:
         return True
 
-    if _SPA_ROOTS.search(html):
-        return True
-
     threshold = settings.render_min_text_length if min_text_length is None else min_text_length
     body_match = _BODY_TEXT.search(html)
     body = body_match.group(1) if body_match else html
     visible = _TAGS.sub(" ", body)
-    return len(re.sub(r"\s+", " ", visible).strip()) < threshold
+    clean_text = re.sub(r"\s+", " ", visible).strip()
+
+    # Content-rich pages (including SSR/SSG frameworks) never need heavy browser rendering
+    if len(clean_text) >= threshold:
+        return False
+
+    if _SPA_ROOTS.search(html):
+        return True
+
+    return len(clean_text) < threshold
 
 
 class PlaywrightRenderer:
@@ -89,7 +95,14 @@ class PlaywrightRenderer:
                 self._playwright = await async_playwright().start()
                 self._browser = await self._playwright.chromium.launch(
                     headless=True,
-                    args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+                    args=[
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-gpu",
+                        "--disable-setuid-sandbox",
+                        "--no-zygote",
+                        "--js-flags=--max-old-space-size=128",
+                    ],
                 )
                 logger.info("Playwright renderer started (concurrency=%d).", self._concurrency)
                 return True

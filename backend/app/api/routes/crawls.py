@@ -79,20 +79,24 @@ def start_crawl(
     """Queue a crawl. One active run per website — re-crawling mid-run would double the work."""
     from datetime import datetime, timezone
 
-    active = db.scalar(
+    active_runs = db.scalars(
         select(CrawlRun).where(
             CrawlRun.website_id == website.id, CrawlRun.status.in_(ACTIVE_STATUSES)
         )
-    )
-    if active is not None:
-        ref_time = active.started_at or active.created_at
+    ).all()
+    active = None
+    now = datetime.now(timezone.utc)
+    for run in active_runs:
+        ref_time = run.started_at or run.created_at
         if ref_time:
             ref_utc = ref_time.replace(tzinfo=timezone.utc) if ref_time.tzinfo is None else ref_time
-            if (datetime.now(timezone.utc) - ref_utc).total_seconds() > 400:
-                active.status = RunStatus.FAILED
-                active.error_message = "Crawl process interrupted by server restart."
+            if (now - ref_utc).total_seconds() > 300:
+                run.status = RunStatus.FAILED
+                run.stage = "failed"
+                run.error = "Crawl process interrupted by server restart or timed out."
                 db.commit()
-                active = None
+                continue
+        active = run
 
     if active is not None:
         raise ConflictError(

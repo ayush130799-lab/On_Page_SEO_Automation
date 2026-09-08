@@ -8,7 +8,7 @@ with 10 000 pages each cannot be summarised by loading rows into Python.
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Query
@@ -382,6 +382,17 @@ def website_overview(
         select(CrawlRun).where(CrawlRun.website_id == website.id)
         .order_by(CrawlRun.id.desc()).limit(5)
     ).all()
+    now_utc = datetime.now(timezone.utc)
+    for run in latest_runs:
+        if run.status in (RunStatus.RUNNING, RunStatus.QUEUED):
+            ref = run.started_at or run.created_at
+            if ref:
+                ref_utc = ref.replace(tzinfo=timezone.utc) if ref.tzinfo is None else ref
+                if (now_utc - ref_utc).total_seconds() > 300:
+                    run.status = RunStatus.FAILED
+                    run.stage = "failed"
+                    run.error = "Crawl timed out or was interrupted by server restart."
+                    db.commit()
 
     integrations = [
         {
