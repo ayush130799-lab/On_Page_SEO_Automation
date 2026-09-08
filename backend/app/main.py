@@ -56,9 +56,25 @@ async def lifespan(_: FastAPI):
             "SECRET_KEY must be set to a strong random value when ENVIRONMENT=production."
         )
     if settings.is_production and (settings.bootstrap_admin_password or "password123") == "password123":
-        raise RuntimeError(
-            "BOOTSTRAP_ADMIN_PASSWORD must be set to a strong value when ENVIRONMENT=production."
-        )
+        # Only enforce if no administrator exists yet in the database.
+        # If an administrator was already provisioned, a missing or default bootstrap password
+        # should not crash production startup or fail health checks.
+        try:
+            from sqlalchemy import select
+            from .db import SessionLocal
+            from .models import User, UserRole
+
+            with SessionLocal() as db:
+                has_admin = db.scalar(select(User).where(User.role == UserRole.ADMIN)) is not None
+        except Exception as exc:
+            logger.warning("Could not check existing admin on startup: %s", exc)
+            has_admin = False
+        if not has_admin:
+            raise RuntimeError(
+                "BOOTSTRAP_ADMIN_PASSWORD must be set to a strong value when ENVIRONMENT=production."
+            )
+        else:
+            logger.info("Administrator account already exists in database; bootstrap password enforcement skipped.")
     try:
         # Create any missing tables (e.g. PostgreSQL or SQLite) automatically on startup
         init_db()

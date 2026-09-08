@@ -401,44 +401,69 @@ def refresh_website_summary(db: Session, website: Website) -> None:
 
 def cleanup_website_parameter_pages(db: Session, website: Website) -> int:
     """Deactivate duplicate parameter variant Page rows created during older crawls or metric syncs."""
-    active_pages = db.scalars(
-        select(Page).where(Page.website_id == website.id, Page.is_active.is_(True))
-    ).all()
+    try:
+        active_pages = db.scalars(
+            select(Page).where(Page.website_id == website.id, Page.is_active.is_(True))
+        ).all()
 
-    deactivated = 0
-    seen_canonical_hashes: set[str] = set()
+        if not active_pages:
+            return 0
 
-    # Sort pages so clean base URLs (without parameters) come first
-    sorted_pages = sorted(active_pages, key=lambda p: (1 if "?" in p.url else 0, len(p.url)))
-
-    for page in sorted_pages:
-        norm = normalize_url(page.url)
-        norm_hash = url_hash(norm)
-
-        if norm_hash in seen_canonical_hashes:
-            page.is_active = False
-            deactivated += 1
-        else:
-            seen_canonical_hashes.add(norm_hash)
-            if page.url != norm:
-                page.url = norm
-                page.url_hash = norm_hash
-                page.path = url_path(norm)
-
-    if deactivated > 0:
-        db.flush()
-        active = select(Page).where(Page.website_id == website.id, Page.is_active.is_(True))
-        website.total_pages = db.scalar(select(func.count()).select_from(active.subquery())) or 0
-        website.average_seo_score = db.scalar(
-            select(func.avg(Page.seo_score)).where(
-                Page.website_id == website.id, Page.is_active.is_(True), Page.seo_score.isnot(None)
-            )
+        # Load all url_hashes that exist in the database for this website (both active and inactive)
+        # to ensure we never attempt to update a row to a hash that already exists.
+        all_existing_hashes = set(
+            db.scalars(
+                select(Page.url_hash).where(Page.website_id == website.id)
+            ).all()
         )
-        if website.average_seo_score is not None:
-            website.average_seo_score = round(float(website.average_seo_score), 1)
-        db.commit()
 
-    return deactivated
+        deactivated = 0
+        seen_canonical_hashes: set[str] = set()
+
+        # Sort pages so clean base URLs (without parameters) come first
+        sorted_pages = sorted(active_pages, key=lambda p: (1 if "?" in p.url else 0, len(p.url)))
+
+        for page in sorted_pages:
+            norm = normalize_url(page.url)
+            norm_hash = url_hash(norm)
+
+            if norm_hash in seen_canonical_hashes:
+                page.is_active = False
+                deactivated += 1
+            else:
+                seen_canonical_hashes.add(norm_hash)
+                if page.url != norm:
+                    # If this normalized hash already belongs to another page row in the database,
+                    # we must NOT overwrite page.url_hash (violates unique constraint).
+                    # Deactivate this duplicate parameter variant instead.
+                    if norm_hash in all_existing_hashes and page.url_hash != norm_hash:
+                        page.is_active = False
+                        deactivated += 1
+                    else:
+                        all_existing_hashes.discard(page.url_hash)
+                        page.url = norm
+                        page.url_hash = norm_hash
+                        page.path = url_path(norm)
+                        all_existing_hashes.add(norm_hash)
+
+        if deactivated > 0:
+            db.flush()
+            active = select(Page).where(Page.website_id == website.id, Page.is_active.is_(True))
+            website.total_pages = db.scalar(select(func.count()).select_from(active.subquery())) or 0
+            website.average_seo_score = db.scalar(
+                select(func.avg(Page.seo_score)).where(
+                    Page.website_id == website.id, Page.is_active.is_(True), Page.seo_score.isnot(None)
+                )
+            )
+            if website.average_seo_score is not None:
+                website.average_seo_score = round(float(website.average_seo_score), 1)
+            db.commit()
+
+        return deactivated
+    except Exception as exc:
+        logger.warning("cleanup_website_parameter_pages encountered an error and rolled back: %s", exc)
+        db.rollback()
+        return 0
 
 
 # ── Entry point ─────────────────────────────────────────────────────────────

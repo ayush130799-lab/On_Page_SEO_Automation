@@ -68,20 +68,43 @@ class IntegrationError(AppError):
     code = "integration_error"
 
 
-def error_response(status_code: int, code: str, message: str, details: Any = None) -> JSONResponse:
+def _cors_headers(request: Request | None) -> dict[str, str]:
+    if request is None:
+        return {}
+    origin = request.headers.get("origin")
+    if not origin:
+        return {}
+    from ..config import settings
+    if origin in settings.cors_origin_list or "*" in settings.cors_origins:
+        return {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+        }
+    return {}
+
+
+def error_response(
+    status_code: int,
+    code: str,
+    message: str,
+    details: Any = None,
+    headers: dict[str, str] | None = None,
+) -> JSONResponse:
     body: dict[str, Any] = {"error": {"code": code, "message": message}}
     if details is not None:
         body["error"]["details"] = details
-    return JSONResponse(status_code=status_code, content=body)
+    return JSONResponse(status_code=status_code, content=body, headers=headers)
 
 
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
-    async def _app_error(_: Request, exc: AppError) -> JSONResponse:
-        return error_response(exc.status_code, exc.code, exc.message, exc.details)
+    async def _app_error(request: Request, exc: AppError) -> JSONResponse:
+        return error_response(
+            exc.status_code, exc.code, exc.message, exc.details, headers=_cors_headers(request)
+        )
 
     @app.exception_handler(StarletteHTTPException)
-    async def _http_error(_: Request, exc: StarletteHTTPException) -> JSONResponse:
+    async def _http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         detail = exc.detail if isinstance(exc.detail, str) else "Request failed."
         code = {
             401: "unauthenticated",
@@ -90,10 +113,10 @@ def register_exception_handlers(app: FastAPI) -> None:
             409: "conflict",
             429: "rate_limited",
         }.get(exc.status_code, "http_error")
-        return error_response(exc.status_code, code, detail)
+        return error_response(exc.status_code, code, detail, headers=_cors_headers(request))
 
     @app.exception_handler(RequestValidationError)
-    async def _validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
+    async def _validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
         return error_response(
             422,
             "validation_error",
@@ -102,6 +125,7 @@ def register_exception_handlers(app: FastAPI) -> None:
                 {"field": ".".join(str(p) for p in e.get("loc", [])), "message": e.get("msg")}
                 for e in exc.errors()
             ],
+            headers=_cors_headers(request),
         )
 
     @app.exception_handler(Exception)
@@ -111,4 +135,5 @@ def register_exception_handlers(app: FastAPI) -> None:
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             "internal_error",
             "An unexpected error occurred.",
+            headers=_cors_headers(request),
         )

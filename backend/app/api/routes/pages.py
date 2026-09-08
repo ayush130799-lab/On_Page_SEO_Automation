@@ -123,8 +123,12 @@ def list_pages(
     """
     window = window_days or settings.priority_metric_window_days
 
-    from ...services.pipeline import cleanup_website_parameter_pages
-    cleanup_website_parameter_pages(db, website)
+    try:
+        from ...services.pipeline import cleanup_website_parameter_pages
+        cleanup_website_parameter_pages(db, website)
+    except Exception as exc:
+        logger.warning("cleanup_website_parameter_pages in list_pages skipped due to error: %s", exc)
+        db.rollback()
 
     stmt = select(Page).where(Page.website_id == website.id)
     if not include_inactive:

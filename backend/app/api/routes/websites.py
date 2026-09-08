@@ -153,8 +153,12 @@ def list_websites(
 
 @router.get("/{website_id}", response_model=WebsiteDetailResponse)
 def get_website(website: ReadableWebsite, db: DbSession):
-    from ...services.pipeline import cleanup_website_parameter_pages
-    cleanup_website_parameter_pages(db, website)
+    try:
+        from ...services.pipeline import cleanup_website_parameter_pages
+        cleanup_website_parameter_pages(db, website)
+    except Exception as exc:
+        logger.warning("cleanup_website_parameter_pages in get_website skipped due to error: %s", exc)
+        db.rollback()
     return _detail(db, website)
 
 

@@ -370,6 +370,15 @@ class TestInputValidation:
         assert body["error"]["code"] == "validation_error"
         assert any("url" in detail["field"] for detail in body["error"]["details"])
 
+    def test_error_responses_carry_cors_headers(self, client, member_user):
+        resp = client.get(
+            "/api/websites/999999",
+            headers={"Origin": "http://localhost:3000", **auth_headers(member_user)},
+        )
+        assert resp.status_code == 404
+        assert resp.headers.get("access-control-allow-origin") == "http://localhost:3000"
+        assert resp.headers.get("access-control-allow-credentials") == "true"
+
 
 class TestProductionGuards:
     def test_the_app_refuses_to_start_with_the_development_secret(self, monkeypatch):
@@ -414,6 +423,22 @@ class TestProductionGuards:
         monkeypatch.setattr("app.main.settings.secret_key", "a-properly-random-production-secret")
         monkeypatch.setattr("app.main.settings.bootstrap_admin_email", "")
         monkeypatch.setattr("app.main.settings.bootstrap_admin_password", "a-properly-random-admin-password")
+
+        async def run():
+            async with lifespan(None):
+                return True
+
+        assert asyncio.run(run()) is True
+
+    def test_existing_admin_allows_startup_with_default_password(self, monkeypatch, db, admin_user):
+        import asyncio
+
+        from app.main import lifespan
+
+        monkeypatch.setattr("app.main.settings.environment", "production")
+        monkeypatch.setattr("app.main.settings.secret_key", "a-properly-random-production-secret")
+        monkeypatch.setattr("app.main.settings.bootstrap_admin_password", "password123")
+        monkeypatch.setattr("app.db.SessionLocal", lambda: db)
 
         async def run():
             async with lifespan(None):
