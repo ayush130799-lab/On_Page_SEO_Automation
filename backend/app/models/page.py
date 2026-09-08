@@ -91,8 +91,6 @@ class Page(TimestampMixin, Base):
     content_scope: Mapped[str | None] = mapped_column(String(20))
     tracking_pixel_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     non_http_link_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    sponsored_link_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    ugc_link_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     structured_data_formats: Mapped[list[str] | None] = mapped_column(JSONColumn)
     #: Set when JavaScript rendering was required but did not succeed.
     render_error: Mapped[str | None] = mapped_column(Text)

@@ -91,11 +91,98 @@ engine = create_resilient_engine()
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
 
-def init_db(target_engine: Engine | None = None) -> None:
-    """Create any missing tables. Used by tests and the SQLite dev path."""
-    from . import models  # noqa: F401  (registers mappers)
+def sync_database_schema(target_engine: Engine | None = None) -> None:
+    """Synchronise database schema with Base.metadata.
 
-    Base.metadata.create_all(bind=target_engine or engine)
+    1. Creates any missing tables (e.g. page_intent_profiles, recommendation_scores, etc.).
+    2. Inspects existing tables and adds any missing columns using ALTER TABLE ... ADD COLUMN.
+    3. Backfills default values for newly added columns where needed.
+    4. Ensures alembic_version contains the head revision.
+    """
+    from . import models  # noqa: F401  (registers mappers)
+    import sqlalchemy as sa
+
+    eng = target_engine or engine
+    is_postgres = eng.dialect.name == "postgresql"
+
+    # Step 1: Create any missing tables
+    Base.metadata.create_all(bind=eng)
+
+    # Step 2: Inspect existing tables and add any missing columns
+    inspector = sa.inspect(eng)
+    db_tables = set(inspector.get_table_names())
+
+    with eng.begin() as conn:
+        for table_name, table in Base.metadata.tables.items():
+            if table_name not in db_tables:
+                continue
+            existing_cols = {c["name"] for c in inspector.get_columns(table_name)}
+            for col in table.columns:
+                if col.name not in existing_cols:
+                    col_type_str = str(col.type.compile(eng.dialect))
+                    default_clause = ""
+                    if col.server_default is not None and hasattr(col.server_default.arg, "text"):
+                        default_clause = f" DEFAULT {col.server_default.arg.text}"
+                    elif col.default is not None and getattr(col.default, "is_scalar", False):
+                        val = col.default.arg
+                        if isinstance(val, bool):
+                            default_clause = (
+                                f" DEFAULT {'true' if val else 'false'}"
+                                if is_postgres
+                                else f" DEFAULT {1 if val else 0}"
+                            )
+                        elif isinstance(val, (int, float)):
+                            default_clause = f" DEFAULT {val}"
+                        elif isinstance(val, str):
+                            default_clause = f" DEFAULT '{val}'"
+                    elif not col.nullable:
+                        if isinstance(col.type, sa.Integer):
+                            default_clause = " DEFAULT 0"
+                        elif isinstance(col.type, sa.Boolean):
+                            default_clause = " DEFAULT false" if is_postgres else " DEFAULT 0"
+                        elif isinstance(col.type, (sa.String, sa.Text)):
+                            default_clause = " DEFAULT ''"
+
+                    if is_postgres:
+                        stmt = f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col.name} {col_type_str}{default_clause}"
+                    else:
+                        stmt = f"ALTER TABLE {table_name} ADD COLUMN {col.name} {col_type_str}{default_clause}"
+                    try:
+                        conn.execute(sa.text(stmt))
+                        logger.info("Added missing column %s.%s (%s)", table_name, col.name, col_type_str)
+                    except Exception as col_exc:
+                        logger.warning("Could not add column %s.%s: %s", table_name, col.name, col_exc)
+
+        # Step 3: Backfill any newly added columns that require values
+        try:
+            conn.execute(
+                sa.text(
+                    "UPDATE pages SET content_captured_at = last_crawled_at "
+                    "WHERE content_captured_at IS NULL AND last_crawled_at IS NOT NULL"
+                )
+            )
+            conn.execute(
+                sa.text("UPDATE pages SET crawl_quality = 'ok' WHERE crawl_quality IS NULL OR crawl_quality = ''")
+            )
+        except Exception:
+            pass
+
+        # Step 4: Ensure alembic_version is stamped to head
+        try:
+            conn.execute(
+                sa.text(
+                    "CREATE TABLE IF NOT EXISTS alembic_version (version_num VARCHAR(32) NOT NULL PRIMARY KEY)"
+                )
+            )
+            conn.execute(sa.text("DELETE FROM alembic_version"))
+            conn.execute(sa.text("INSERT INTO alembic_version (version_num) VALUES ('0012_seo_experiments')"))
+        except Exception as stamp_exc:
+            logger.warning("Could not update alembic_version: %s", stamp_exc)
+
+
+def init_db(target_engine: Engine | None = None) -> None:
+    """Create any missing tables and add any missing columns."""
+    sync_database_schema(target_engine)
 
 
 def get_db():

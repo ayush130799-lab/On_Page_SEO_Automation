@@ -135,5 +135,6 @@ def register_exception_handlers(app: FastAPI) -> None:
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             "internal_error",
             "An unexpected error occurred.",
+            details={"type": type(exc).__name__, "message": str(exc)},
             headers=_cors_headers(request),
         )

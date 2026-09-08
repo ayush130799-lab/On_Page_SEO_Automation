@@ -70,29 +70,26 @@ def run_migration() -> None:
 
         logger.info("Database migrations/stamping successfully completed.")
     except Exception as exc:
-        logger.warning("Migration raised an exception: %s", exc)
+        logger.warning("Alembic upgrade raised an exception: %s", exc)
         err_msg = str(exc).lower()
         if "already exists" in err_msg or "duplicate" in err_msg:
             try:
                 logger.info("Relation already exists error encountered. Stamping alembic head...")
                 command.stamp(alembic_cfg, "head")
                 logger.info("Stamped head successfully.")
-                return
             except Exception as stamp_exc:
                 logger.warning("Stamp head attempt failed: %s", stamp_exc)
 
-        # Check if core tables already exist so the API can safely run
-        try:
-            check_engine = sa.create_engine(db_url)
-            with check_engine.connect() as conn:
-                inspector = sa.inspect(conn)
-                if "users" in inspector.get_table_names():
-                    logger.info("Core tables ('users') exist. Proceeding with application startup...")
-                    return
-            check_engine.dispose()
-        except Exception as check_exc:
-            logger.error("Could not verify existing tables: %s", check_exc)
-        raise exc
+    # Always ensure all tables and all columns from Base.metadata exist
+    try:
+        logger.info("Running schema synchronisation to ensure all tables and columns exist...")
+        sync_engine = sa.create_engine(db_url)
+        from app.db import sync_database_schema
+        sync_database_schema(sync_engine)
+        sync_engine.dispose()
+        logger.info("Schema synchronisation completed successfully.")
+    except Exception as sync_exc:
+        logger.warning("Schema synchronisation encountered an error: %s", sync_exc)
 
 
 if __name__ == "__main__":

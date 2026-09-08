@@ -231,19 +231,24 @@ def _top_issues_for(db: Session, page_ids: list[int], per_page: int = 3) -> dict
     if not page_ids:
         return {}
 
-    rows = db.execute(
-        select(SEOIssue.page_id, SEOIssue.severity, SEOIssue.title)
-        .where(SEOIssue.page_id.in_(page_ids), SEOIssue.is_resolved.is_(False))
-    ).all()
+    try:
+        rows = db.execute(
+            select(SEOIssue.page_id, SEOIssue.severity, SEOIssue.title)
+            .where(SEOIssue.page_id.in_(page_ids), SEOIssue.is_resolved.is_(False))
+        ).all()
 
-    grouped: dict[int, list[tuple[int, str]]] = {}
-    for page_id, severity, title in rows:
-        grouped.setdefault(page_id, []).append((severity_rank(severity), title))
+        grouped: dict[int, list[tuple[int, str]]] = {}
+        for page_id, severity, title in rows:
+            grouped.setdefault(page_id, []).append((severity_rank(severity), title))
 
-    return {
-        page_id: [title for _, title in sorted(entries, key=lambda e: -e[0])[:per_page]]
-        for page_id, entries in grouped.items()
-    }
+        return {
+            page_id: [title for _, title in sorted(entries, key=lambda e: -e[0])[:per_page]]
+            for page_id, entries in grouped.items()
+        }
+    except Exception as exc:
+        logger.warning("_top_issues_for encountered an error: %s", exc)
+        db.rollback()
+        return {}
 
 
 def _intent_for(db: Session, page_ids: list[int]) -> dict[int, dict]:
@@ -266,7 +271,9 @@ def _intent_for(db: Session, page_ids: list[int]) -> dict[int, dict]:
             row.page_id: {"intent": row.detected_intent, "mismatch": row.intent_mismatch}
             for row in rows
         }
-    except Exception:
+    except Exception as exc:
+        logger.warning("_intent_for encountered an error: %s", exc)
+        db.rollback()
         return {}
 
 

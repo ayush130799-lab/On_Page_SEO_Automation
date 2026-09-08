@@ -9,8 +9,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
 
-from ...core.deps import DbSession, ReadableWebsite
-from ...models import Integration, IntegrationProvider, Page, SEOAudit, SEOIssue
+from ...core.deps import CurrentUser, DbSession, ReadableWebsite
+from ...models import Integration, IntegrationProvider, Page, SEOAudit, SEOIssue, UserRole
 from ...services.integrations import ga4
 from ...services.integrations.google_oauth import get_access_token
 
@@ -198,3 +198,13 @@ async def debug_ga4_integration(
         "ga4_90_day_sync_result": report_result,
         "api_error": api_error,
     }
+
+
+@router.post("/debug/sync-schema")
+def trigger_sync_schema(user: CurrentUser, db: DbSession) -> dict[str, Any]:
+    """Force immediate schema synchronisation (Admin only)."""
+    if user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
+    from ...db import engine, sync_database_schema
+    sync_database_schema(engine)
+    return {"status": "ok", "message": "Database schema synchronised successfully."}
