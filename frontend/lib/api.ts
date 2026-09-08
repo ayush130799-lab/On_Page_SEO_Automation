@@ -459,6 +459,22 @@ export const api = {
       ),
   },
 
+  intent: {
+    analyse: (websiteId: number, force = false) =>
+      request<{
+        website_id: number;
+        status: string;
+        considered: number;
+        classified: number;
+        mismatches_found: number;
+        failed: number;
+        errors: string[];
+      }>(`/api/websites/${websiteId}/intent/analyse`, {
+        method: "POST",
+        body: { wait: true, force },
+      }),
+  },
+
   experiments: {
     list: (websiteId: number, query: { status?: string; limit?: number } = {}) =>
       request<{ items: ExperimentListItem[] }>(

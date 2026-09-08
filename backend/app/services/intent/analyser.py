@@ -47,6 +47,12 @@ class _AnalysisContext:
     business_relevance: dict[int, float] = field(default_factory=dict)
 
 
+#: Commit after this many pages so a crash, restart or timeout partway through a large site
+#: does not discard every page already classified — mirrors PROGRESS_FLUSH_EVERY in pipeline.py
+#: rather than holding one giant transaction open for the whole website.
+COMMIT_EVERY = 100
+
+
 @dataclass
 class IntentAnalysisOutcome:
     website_id: int
@@ -319,17 +325,26 @@ def analyse_intent_for_website(
         business_relevance=_business_relevance_by_page(db, website, ids),
     )
 
-    for page in pages:
+    for index, page in enumerate(pages, start=1):
         try:
             _process_page(
                 db, website, page,
                 crawl_run_id=crawl_run_id, force=force, outcome=outcome, context=context,
             )
         except Exception as exc:
+            # A DB-level error (e.g. a constraint violation during flush) leaves the session's
+            # transaction aborted on Postgres: every later flush in this loop — for every
+            # remaining page — raises the same way without ever explaining why, and the final
+            # commit below silently discards everything, including pages that classified fine
+            # before this one. Without the rollback, one bad page zeroes out the whole website.
+            db.rollback()
             outcome.failed += 1
             msg = f"{page.url}: {type(exc).__name__}: {str(exc)[:200]}"
             outcome.errors.append(msg)
             logger.exception("Intent analysis failed for %s", page.url)
+
+        if index % COMMIT_EVERY == 0:
+            db.commit()
 
     db.commit()
     logger.info(

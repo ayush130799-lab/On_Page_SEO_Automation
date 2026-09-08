@@ -279,6 +279,15 @@ function WebsiteDashboard() {
             </button>
             <button
               type="button"
+              onClick={() => void runAction("Analysing intent", () => api.intent.analyse(websiteId))}
+              disabled={Boolean(action)}
+              className="btn-secondary"
+              title="Classify search intent for any crawled page that doesn't have it yet"
+            >
+              Analyse intent
+            </button>
+            <button
+              type="button"
               onClick={() => void startCrawl()}
               disabled={Boolean(action) || Boolean(activeCrawl)}
               className="btn-primary"

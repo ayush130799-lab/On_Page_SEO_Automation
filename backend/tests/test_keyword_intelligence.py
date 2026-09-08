@@ -194,3 +194,56 @@ class TestAiKeywordDiscoveryRespectsTheCostGate:
         profile = db.query(PageIntentProfile).filter_by(page_id=page.id).one()
         keywords = db.query(KeywordOpportunity).filter_by(intent_profile_id=profile.id).all()
         assert not any(k.source == "ai" for k in keywords)
+
+
+class TestIntentAnalysisSurvivesOneBadPage:
+    """A single page-level DB error (e.g. a real site's unusual URL or content shape tripping a
+    constraint) must not silently zero out intent data for an entire site. Before the fix, the
+    per-page loop never rolled back after a caught exception: on Postgres (and in SQLAlchemy's own
+    session state machine, regardless of backend) a failed flush leaves the transaction unusable,
+    so every later page in the same run fails the same way, and the single commit at the very end
+    then discards everything — including pages classified successfully before the bad one."""
+
+    def test_one_bad_page_does_not_wipe_out_the_rest_of_the_site(self, db, member_user, monkeypatch):
+        website = make_site(db, member_user, name="Bulk", domain="bulk.test")
+        pages = [add_page(db, website, f"/page-{i}") for i in range(5)]
+        db.commit()
+
+        from app.services.intent import analyser as analyser_module
+
+        # A periodic-commit checkpoint every 2 pages, exercised against a 5-page site with the
+        # failure on page 3 of 5, proves both halves of the fix together: pages checkpointed
+        # *before* the bad page survive its rollback, and pages *after* it are not caught in the
+        # same cascade the rollback prevents.
+        monkeypatch.setattr(analyser_module, "COMMIT_EVERY", 2)
+
+        def fake_process_page(db, website, page, *, crawl_run_id, force, outcome, context):
+            if page.path == "/page-2":
+                # A real flush-time IntegrityError (unique constraint on page_id) — not a
+                # contrived exception — is what a single malformed page can trigger for real.
+                db.add(PageIntentProfile(page_id=page.id, website_id=website.id, detected_intent="a"))
+                db.add(PageIntentProfile(page_id=page.id, website_id=website.id, detected_intent="b"))
+                db.flush()
+            else:
+                db.add(
+                    PageIntentProfile(
+                        page_id=page.id, website_id=website.id, detected_intent="informational"
+                    )
+                )
+                outcome.classified += 1
+
+        monkeypatch.setattr(analyser_module, "_process_page", fake_process_page)
+
+        outcome = analyser_module.analyse_intent_for_website(db, website)
+
+        assert outcome.failed == 1
+        assert outcome.classified == 4
+
+        db.expire_all()
+        surviving = (
+            db.query(PageIntentProfile).filter_by(website_id=website.id).all()
+        )
+        assert len(surviving) == 4
+        assert {p.page_id for p in surviving} == {
+            page.id for page in pages if page.path != "/page-2"
+        }
