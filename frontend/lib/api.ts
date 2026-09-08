@@ -133,15 +133,23 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   }
 
   let response: Response | undefined;
-  const backoffs = [2000, 4000, 6000];
+  // Render's free tier can take 30-60s+ to answer the first request after the service has been
+  // idle (spun down) or has just restarted (e.g. after an OOM kill during a crawl). A short retry
+  // budget makes a merely-slow backend look identical to a genuinely dead one, so this budget is
+  // sized to comfortably outlast a cold start rather than to fail fast.
+  const backoffs = [1500, 2000, 3000, 5000, 8000, 12000, 18000, 25000];
+  const attemptTimeoutMs = 20000;
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= backoffs.length; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), attemptTimeoutMs);
     try {
       response = await fetch(url.toString(), {
         method,
         headers,
         body: body === undefined ? undefined : JSON.stringify(body),
+        signal: controller.signal,
       });
       break; // Request succeeded
     } catch (caught) {
@@ -149,14 +157,19 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
       if (attempt < backoffs.length) {
         await new Promise((resolve) => setTimeout(resolve, backoffs[attempt]));
       }
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
   if (!response) {
+    console.error("API unreachable after retries:", lastError);
     throw new ApiError(
       0,
       "network_error",
-      `Could not reach the API at ${API_BASE}. Is the backend running?`,
+      `Could not reach the API at ${API_BASE} after several attempts. If this is the first ` +
+        `request in a while, the server may be waking up from a cold start — please try again ` +
+        `in a moment.`,
     );
   }
 
