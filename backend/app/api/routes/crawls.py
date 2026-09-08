@@ -24,6 +24,13 @@ router = APIRouter(prefix="/api", tags=["crawls"])
 
 ACTIVE_STATUSES = (RunStatus.QUEUED, RunStatus.RUNNING)
 
+# A run with no progress update in this long is presumed orphaned (e.g. by a server restart)
+# rather than merely slow. Large sites spend part of the run in single non-incremental phases
+# (auditing all pages in one pass, persisting them, scoring) that don't touch updated_at in
+# between — on a resource-constrained host those phases alone can run past a few minutes, so
+# this stays generous rather than racing a legitimately still-working crawl.
+STALE_RUN_TIMEOUT_SECONDS = 1200
+
 
 def _execute_crawl(crawl_run_id: int) -> None:
     """Run the pipeline in its own session (background task / worker entry point)."""
@@ -90,7 +97,7 @@ def start_crawl(
         ref_time = run.updated_at or run.started_at or run.created_at
         if ref_time:
             ref_utc = ref_time.replace(tzinfo=timezone.utc) if ref_time.tzinfo is None else ref_time
-            if (now - ref_utc).total_seconds() > 300:
+            if (now - ref_utc).total_seconds() > STALE_RUN_TIMEOUT_SECONDS:
                 run.status = RunStatus.FAILED
                 run.stage = "failed"
                 run.error = "Crawl process interrupted by server restart or timed out."
@@ -159,14 +166,19 @@ def get_crawl(crawl_run_id: int, user: CurrentUser, db: DbSession):
 
     get_website_for_read(run.website_id, user, db)  # authorization check
 
-    # Auto-fail stuck/orphaned runs from process restarts prior to deployment
+    # Auto-fail stuck/orphaned runs from process restarts prior to deployment. Keyed off
+    # updated_at (bumped on every progress commit and stage transition) rather than
+    # started_at, so a run that is still actively working — e.g. deep in a long,
+    # non-incremental audit pass over a large site — is not mistaken for an orphan just
+    # because it has been running for a while.
     if run.status in ACTIVE_STATUSES:
-        ref_time = run.started_at or run.created_at
+        ref_time = run.updated_at or run.started_at or run.created_at
         if ref_time:
             ref_utc = ref_time.replace(tzinfo=timezone.utc) if ref_time.tzinfo is None else ref_time
-            if (datetime.now(timezone.utc) - ref_utc).total_seconds() > 400:
+            if (datetime.now(timezone.utc) - ref_utc).total_seconds() > STALE_RUN_TIMEOUT_SECONDS:
                 run.status = RunStatus.FAILED
-                run.error_message = "Crawl process interrupted by server restart."
+                run.stage = "failed"
+                run.error = "Crawl process interrupted by server restart or timed out."
                 db.commit()
                 db.refresh(run)
 

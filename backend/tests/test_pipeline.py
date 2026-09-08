@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import httpx
 import pytest
 
@@ -292,6 +294,53 @@ class TestCrawlApi:
         polled = client.get(f"/api/crawls/{run_id}", headers=headers)
         assert polled.status_code == 200
         assert polled.json()["id"] == run_id
+
+    def test_polling_a_run_still_making_progress_does_not_fail_it(
+        self, client, db, acme, member_user, monkeypatch
+    ):
+        # A run whose updated_at is recent (bumped by the last progress commit) must survive a
+        # poll even though it has been running long enough to trip the old, started_at-only
+        # staleness check — large sites spend minutes in non-incremental phases like auditing.
+        monkeypatch.setattr("app.api.routes.crawls.dispatch_crawl", lambda *a, **k: "test")
+        headers = auth_headers(member_user)
+        run_id = client.post(
+            f"/api/websites/{acme.id}/crawls", json={"mode": "full"}, headers=headers
+        ).json()["id"]
+
+        run = db.get(CrawlRun, run_id)
+        run.status = RunStatus.RUNNING
+        run.started_at = datetime.now(timezone.utc) - timedelta(minutes=30)
+        run.updated_at = datetime.now(timezone.utc) - timedelta(minutes=2)
+        db.commit()
+
+        polled = client.get(f"/api/crawls/{run_id}", headers=headers)
+        assert polled.status_code == 200
+        assert polled.json()["status"] == RunStatus.RUNNING
+
+    def test_polling_a_truly_orphaned_run_fails_it_with_a_message(
+        self, client, db, acme, member_user, monkeypatch
+    ):
+        # No progress in a very long time (started_at, updated_at both stale) means the process
+        # behind it is gone — this must both flip the status and persist a real error message
+        # rather than a since-renamed attribute that silently never reaches the database.
+        monkeypatch.setattr("app.api.routes.crawls.dispatch_crawl", lambda *a, **k: "test")
+        headers = auth_headers(member_user)
+        run_id = client.post(
+            f"/api/websites/{acme.id}/crawls", json={"mode": "full"}, headers=headers
+        ).json()["id"]
+
+        run = db.get(CrawlRun, run_id)
+        run.status = RunStatus.RUNNING
+        long_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+        run.started_at = long_ago
+        run.updated_at = long_ago
+        db.commit()
+
+        polled = client.get(f"/api/crawls/{run_id}", headers=headers)
+        assert polled.status_code == 200
+        body = polled.json()
+        assert body["status"] == RunStatus.FAILED
+        assert body["error"]
 
     def test_a_crawl_can_be_cancelled(self, client, acme, member_user, monkeypatch):
         monkeypatch.setattr("app.api.routes.crawls.dispatch_crawl", lambda *a, **k: "test")

@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from ...config import settings
 from ...core.deps import CurrentUser, DbSession, ReadableWebsite, accessible_website_ids
+from .crawls import STALE_RUN_TIMEOUT_SECONDS
 from ...models import (
     AIRecommendation,
     AIStatus,
@@ -388,7 +389,7 @@ def website_overview(
             ref = run.updated_at or run.started_at or run.created_at
             if ref:
                 ref_utc = ref.replace(tzinfo=timezone.utc) if ref.tzinfo is None else ref
-                if (now_utc - ref_utc).total_seconds() > 300:
+                if (now_utc - ref_utc).total_seconds() > STALE_RUN_TIMEOUT_SECONDS:
                     run.status = RunStatus.FAILED
                     run.stage = "failed"
                     run.error = "Crawl timed out or was interrupted by server restart."
