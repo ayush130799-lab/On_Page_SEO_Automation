@@ -11,27 +11,53 @@ import asyncio
 import logging
 import re
 
+from bs4 import BeautifulSoup
+
 from ...config import settings
 
 logger = logging.getLogger(__name__)
 
-#: Root elements that frameworks mount into or framework hydration scripts.
-_SPA_ROOTS = re.compile(
-    r'<(?:div|main|section|app-root)[^>]+(?:id|class)=["\'](?:root|app|__next|__nuxt|q-app|svelte|___gatsby|seo-fallback)["\'][^>]*>'
-    r'|<app-root[^>]*>'
-    r'|__NEXT_DATA__|self\.__next_f|window\.__NUXT__|window\.__INITIAL_STATE__|window\.__remixContext'
-    r'|data-reactroot|data-server-rendered',
-    re.IGNORECASE,
-)
-_BODY_TEXT = re.compile(r"<body[^>]*>(.*?)</body>", re.IGNORECASE | re.DOTALL)
-_TAGS = re.compile(r"<(script|style|noscript)[^>]*>.*?</\1>|<[^>]+>", re.IGNORECASE | re.DOTALL)
+#: Mirrors extractor._NON_RENDERING_TAGS / _CHROME_TAGS: elements that never render as prose, and
+#: site chrome that is not "the content of the page". Kept as a local copy rather than imported —
+#: those are private to extractor.py — but the scope must agree with what extract_page() will
+#: measure once the page is actually parsed, or this check and the real word count judge two
+#: different things again.
+_NON_RENDERING_TAGS = ("script", "style", "template", "svg", "iframe", "noscript")
+_CHROME_TAGS = ("nav", "header", "footer", "aside", "form", "figcaption", "dialog")
+
+
+def _main_content_length(html: str) -> int:
+    """Character length of the page's main content, with chrome and non-rendering tags removed.
+
+    Measuring the *whole* body (as this used to) let nav menus, footers, cookie banners and
+    sidebars — none of which are "the content of the page" — count toward "this page already has
+    enough text, skip rendering". A page can easily clear 400 characters of boilerplate chrome
+    while its actual `<main>`/`<article>` body is still an empty shell waiting on client-side
+    hydration, which is precisely the page this check exists to catch. Scoping to the same region
+    extract_page() treats as content means a page that would be reported as thin *after*
+    extraction is also recognised as thin *before* deciding whether to render it.
+    """
+    if not html:
+        return 0
+    try:
+        soup = BeautifulSoup(html, "lxml")
+    except Exception:
+        return 0
+
+    body = soup.body or soup
+    container = body.find("main") or body.find("article") or body
+    for tag in container.find_all(_NON_RENDERING_TAGS + _CHROME_TAGS):
+        tag.decompose()
+    text = container.get_text(" ", strip=True)
+    return len(re.sub(r"\s+", " ", text).strip())
 
 
 def needs_rendering(html: str, *, render_mode: str = "auto", min_text_length: int | None = None) -> bool:
     """Decide whether a page should be re-fetched through a browser.
 
-    ``always`` and ``never`` short-circuit; ``auto`` looks for an SPA mount point or a body
-    whose visible text is below the configured threshold.
+    ``always`` and ``never`` short-circuit; ``auto`` renders when the page's main content
+    (the same scope :mod:`extractor` measures — ``<main>``/``<article>`` with chrome stripped)
+    is below the configured character threshold.
     """
     if render_mode == "never":
         return False
@@ -42,19 +68,7 @@ def needs_rendering(html: str, *, render_mode: str = "auto", min_text_length: in
         return True
 
     threshold = settings.render_min_text_length if min_text_length is None else min_text_length
-    body_match = _BODY_TEXT.search(html)
-    body = body_match.group(1) if body_match else html
-    visible = _TAGS.sub(" ", body)
-    clean_text = re.sub(r"\s+", " ", visible).strip()
-
-    # Content-rich pages (including SSR/SSG frameworks) never need heavy browser rendering
-    if len(clean_text) >= threshold:
-        return False
-
-    if _SPA_ROOTS.search(html):
-        return True
-
-    return len(clean_text) < threshold
+    return _main_content_length(html) < threshold
 
 
 class PlaywrightRenderer:

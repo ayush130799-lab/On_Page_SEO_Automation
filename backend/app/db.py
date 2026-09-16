@@ -90,6 +90,37 @@ def create_resilient_engine() -> Engine:
 engine = create_resilient_engine()
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
+#: Last-known-good fallback when the Alembic script directory cannot be inspected (e.g. a
+#: deployment that ships only the compiled app without the ``alembic/`` folder). Update this
+#: alongside the newest migration if that ever happens, but the normal path never touches it.
+_FALLBACK_HEAD_REVISION = "0013_opportunity_scores"
+
+
+def _latest_migration_head() -> str:
+    """Resolve the current Alembic head revision from the versions directory on disk.
+
+    ``sync_database_schema`` stamps ``alembic_version`` after creating tables so a fresh SQLite
+    database is never flagged as needing ``alembic upgrade``. Hardcoding that stamp meant every
+    new migration silently went unstamped for SQLite until someone remembered to update this
+    string by hand. Reading the actual head instead keeps the two in sync automatically.
+    """
+    try:
+        from pathlib import Path
+
+        from alembic.script import ScriptDirectory
+
+        alembic_dir = Path(__file__).resolve().parent.parent / "alembic"
+        script = ScriptDirectory(str(alembic_dir))
+        head = script.get_current_head()
+        if head:
+            return head
+    except Exception as exc:
+        logger.warning(
+            "Could not resolve the Alembic head revision dynamically (%s); using the last "
+            "known fallback (%s).", exc, _FALLBACK_HEAD_REVISION,
+        )
+    return _FALLBACK_HEAD_REVISION
+
 
 def sync_database_schema(target_engine: Engine | None = None) -> None:
     """Synchronise database schema with Base.metadata.
@@ -175,7 +206,10 @@ def sync_database_schema(target_engine: Engine | None = None) -> None:
                 )
             )
             conn.execute(sa.text("DELETE FROM alembic_version"))
-            conn.execute(sa.text("INSERT INTO alembic_version (version_num) VALUES ('0012_seo_experiments')"))
+            conn.execute(
+                sa.text("INSERT INTO alembic_version (version_num) VALUES (:v)"),
+                {"v": _latest_migration_head()},
+            )
         except Exception as stamp_exc:
             logger.warning("Could not update alembic_version: %s", stamp_exc)
 

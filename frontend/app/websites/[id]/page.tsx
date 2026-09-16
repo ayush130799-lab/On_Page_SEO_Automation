@@ -29,7 +29,7 @@ import {
   Stat,
   StatusBadge,
 } from "@/components/ui";
-import { ApiError, api } from "@/lib/api";
+import { ApiError, api, saveBlob } from "@/lib/api";
 import {
   PROVIDER_LABELS,
   displayPath,
@@ -46,6 +46,8 @@ const PAGE_SIZE = 50;
 type SortKey =
   | "priority_score"
   | "seo_score"
+  | "traffic_potential_score"
+  | "lead_potential_score"
   | "issue_count"
   | "users"
   | "clicks"
@@ -98,6 +100,9 @@ function WebsiteDashboard() {
   const [error, setError] = useState("");
   const [action, setAction] = useState("");
   const [activeCrawl, setActiveCrawl] = useState<CrawlRun | null>(null);
+
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState("");
 
   const loadOverview = useCallback(async () => {
     try {
@@ -210,6 +215,22 @@ function WebsiteDashboard() {
       setActiveCrawl(run);
     });
 
+  const exportExcel = async () => {
+    if (exporting) return; // guard against a double-click firing a second download
+    setExporting(true);
+    setExportError("");
+    try {
+      const { blob, filename } = await api.seo.exportExcel(websiteId);
+      saveBlob(blob, filename);
+    } catch (caught) {
+      setExportError(
+        caught instanceof ApiError ? caught.message : "Could not generate the Excel report.",
+      );
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const activeFilterCount = useMemo(
     () => Object.values(filters).filter((value) => value !== "").length,
     [filters],
@@ -288,6 +309,15 @@ function WebsiteDashboard() {
             </button>
             <button
               type="button"
+              onClick={() => void exportExcel()}
+              disabled={exporting}
+              className="btn-secondary"
+              title="Download SEO Summary, Page Overview, SEO Issues, AI Recommendations and Keywords as a .xlsx file"
+            >
+              {exporting ? "Generating Excel…" : "Export to Excel"}
+            </button>
+            <button
+              type="button"
               onClick={() => void startCrawl()}
               disabled={Boolean(action) || Boolean(activeCrawl)}
               className="btn-primary"
@@ -301,6 +331,12 @@ function WebsiteDashboard() {
       {error && (
         <div className="mb-4">
           <ErrorNote error={error} />
+        </div>
+      )}
+
+      {exportError && (
+        <div className="mb-4">
+          <ErrorNote error={exportError} onRetry={() => void exportExcel()} />
         </div>
       )}
 
@@ -334,7 +370,7 @@ function WebsiteDashboard() {
         </div>
       )}
 
-      <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
+      <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-5">
         <Stat label="Pages" value={formatNumber(summary.total_pages)} />
         <Stat
           label="Avg SEO score"
@@ -350,6 +386,16 @@ function WebsiteDashboard() {
           }
         />
         <Stat
+          label="Avg traffic potential"
+          value={summary.average_traffic_potential_score?.toFixed(1) ?? "—"}
+          hint="0-100 · additional organic traffic opportunity"
+        />
+        <Stat
+          label="Avg lead potential"
+          value={summary.average_lead_potential_score?.toFixed(1) ?? "—"}
+          hint="0-100 · business/lead opportunity"
+        />
+        <Stat
           label="Critical issues"
           value={formatNumber(summary.critical_issues)}
           tone={summary.critical_issues > 0 ? "bad" : "good"}
@@ -361,10 +407,15 @@ function WebsiteDashboard() {
           tone={summary.high_priority_pages > 0 ? "warn" : "good"}
         />
         <Stat label="Users" value={formatNumber(traffic.users)} hint={`${overview.window_days}d`} />
+        <Stat label="Clicks" value={formatNumber(search.clicks)} />
         <Stat
-          label="Clicks"
-          value={formatNumber(search.clicks)}
-          hint={search.ctr !== null ? `CTR ${formatPercent(search.ctr, 2)}` : undefined}
+          label="CTR"
+          value={search.ctr !== null ? formatPercent(search.ctr, 2) : "—"}
+          hint={
+            search.average_position !== null
+              ? `Avg position ${search.average_position.toFixed(1)}`
+              : undefined
+          }
         />
         <Stat
           label="Conversions"
@@ -596,8 +647,8 @@ function WebsiteDashboard() {
           />
         ) : (
           <>
-            <div className="table-wrap">
-              <table className="data">
+            <div className="table-wrap -mx-4">
+              <table className="data compact">
                 <thead>
                   <tr>
                     <SortHeader
@@ -606,6 +657,7 @@ function WebsiteDashboard() {
                       sort={sort}
                       order={order}
                       onSort={toggleSort}
+                      className="pl-4"
                     />
                     <SortHeader
                       label="Priority"
@@ -618,6 +670,22 @@ function WebsiteDashboard() {
                     <SortHeader
                       label="SEO"
                       column="seo_score"
+                      sort={sort}
+                      order={order}
+                      onSort={toggleSort}
+                      align="right"
+                    />
+                    <SortHeader
+                      label="Traffic"
+                      column="traffic_potential_score"
+                      sort={sort}
+                      order={order}
+                      onSort={toggleSort}
+                      align="right"
+                    />
+                    <SortHeader
+                      label="Leads"
+                      column="lead_potential_score"
                       sort={sort}
                       order={order}
                       onSort={toggleSort}
@@ -654,6 +722,7 @@ function WebsiteDashboard() {
                       onSort={toggleSort}
                       align="right"
                     />
+                    <th className="text-right">CTR</th>
                     <SortHeader
                       label="Conv."
                       column="conversions"
@@ -670,15 +739,15 @@ function WebsiteDashboard() {
                       onSort={toggleSort}
                       align="right"
                     />
-                    <th>Major issues</th>
-                    <th>Intent</th>
-                    <th>AI</th>
+                    <th className="max-w-[150px]">Major issues</th>
+                    <th className="whitespace-nowrap">Intent</th>
+                    <th className="min-w-[85px] whitespace-nowrap pr-4">AI</th>
                   </tr>
                 </thead>
                 <tbody>
                   {pages.map((page) => (
                     <tr key={page.id}>
-                      <td className="max-w-xs">
+                      <td className="max-w-[160px] pl-4">
                         <Link
                           href={`/pages/${page.id}`}
                           className="block truncate font-medium text-slate-200 hover:text-sky-400"
@@ -687,7 +756,7 @@ function WebsiteDashboard() {
                           {displayPath(page.url)}
                         </Link>
                         <div className="truncate text-xs text-slate-500" title={page.title ?? ""}>
-                          {truncate(page.title, 70)}
+                          {truncate(page.title, 55)}
                         </div>
                       </td>
                       <td className="text-right">
@@ -701,20 +770,29 @@ function WebsiteDashboard() {
                       <td className="text-right">
                         <ScoreBadge score={page.seo_score} />
                       </td>
+                      <td className="text-right">
+                        <ScoreBadge score={page.traffic_potential_score} />
+                      </td>
+                      <td className="text-right">
+                        <ScoreBadge score={page.lead_potential_score} />
+                      </td>
                       <td>
                         <SeverityBadge severity={page.highest_severity} />
                       </td>
                       <td className="tnum text-right">{formatNumber(page.users)}</td>
                       <td className="tnum text-right">{formatNumber(page.clicks)}</td>
                       <td className="tnum text-right">{formatNumber(page.impressions)}</td>
+                      <td className="tnum text-right">
+                        {page.ctr !== null ? formatPercent(page.ctr, 2) : "—"}
+                      </td>
                       <td className="tnum text-right">{formatNumber(page.conversions)}</td>
                       <td className="tnum text-right">{page.issue_count}</td>
-                      <td className="max-w-xs">
-                        <span className="text-xs text-slate-400">
+                      <td className="max-w-[150px]">
+                        <span className="line-clamp-2 text-xs text-slate-400" title={page.top_issues.join(" · ")}>
                           {page.top_issues.length > 0 ? page.top_issues.join(" · ") : "—"}
                         </span>
                       </td>
-                      <td>
+                      <td className="whitespace-nowrap">
                         <div className="flex items-center gap-1">
                           <IntentBadge intent={page.search_intent} />
                           {page.intent_mismatch && (
@@ -724,7 +802,7 @@ function WebsiteDashboard() {
                           )}
                         </div>
                       </td>
-                      <td>
+                      <td className="min-w-[85px] whitespace-nowrap pr-4">
                         <AiBadge status={page.ai_status} />
                       </td>
                     </tr>
@@ -798,6 +876,7 @@ function SortHeader({
   order,
   onSort,
   align = "left",
+  className = "",
 }: {
   label: string;
   column: SortKey;
@@ -805,10 +884,11 @@ function SortHeader({
   order: "asc" | "desc";
   onSort: (key: SortKey) => void;
   align?: "left" | "right";
+  className?: string;
 }) {
   const active = sort === column;
   return (
-    <th className={align === "right" ? "text-right" : ""}>
+    <th className={`${align === "right" ? "text-right" : ""} ${className}`}>
       <button
         type="button"
         onClick={() => onSort(column)}

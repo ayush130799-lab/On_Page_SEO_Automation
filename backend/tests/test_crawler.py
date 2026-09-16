@@ -549,6 +549,50 @@ class TestCrawler:
         result = await self._run(self._config(exclude_patterns=["/blog*"]))
         assert not any((p.final_url or p.url).endswith("/blog") for p in result.pages)
 
+    async def test_tracking_param_link_variants_are_reported_but_not_double_crawled(self):
+        """Reported link counts (extractor.py) now preserve tracking-parameter identity so a page's
+        internal_link_count matches what a reader would actually see. The frontier must still
+        collapse those variants to one fetch, and inbound counts must still reflect one linking
+        page, not one per tracking-tagged href."""
+        site = dict(SITE)
+        site["/"] = (
+            '<html><head><title>Home</title></head><body><h1>Home</h1>'
+            '<a href="/about?utm_source=nav">About (nav)</a>'
+            '<a href="/about?utm_source=footer">About (footer)</a>'
+            '<p>Welcome to the site.</p></body></html>'
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if path == "/robots.txt":
+                return httpx.Response(200, text="User-agent: *\n")
+            if path == "/sitemap.xml":
+                return httpx.Response(404)
+            if path in site:
+                return httpx.Response(200, text=site[path], headers={"content-type": "text/html"})
+            return httpx.Response(404)
+
+        transport = httpx.MockTransport(handler)
+        original = httpx.AsyncClient.__init__
+
+        def patched(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            return original(self, *args, **kwargs)
+
+        httpx.AsyncClient.__init__ = patched
+        try:
+            crawler = Crawler("https://example.com/", self._config())
+            result = await crawler.run()
+        finally:
+            httpx.AsyncClient.__init__ = original
+
+        about_fetches = [p for p in result.pages if (p.final_url or p.url).endswith("/about")]
+        assert len(about_fetches) == 1  # one fetch, not one per tracking-tagged href
+
+        home = next(p for p in result.pages if (p.final_url or p.url) == "https://example.com/")
+        assert home.internal_link_count == 2  # both distinct hrefs are reported
+        assert about_fetches[0].inbound_internal_links == 1  # one linking page, not two
+
     async def test_include_patterns_restrict_the_crawl(self):
         result = await self._run(self._config(include_patterns=["/about"]))
         paths = {(p.final_url or p.url) for p in result.pages}

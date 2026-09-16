@@ -20,6 +20,7 @@ EMPTY_METRICS: dict[str, Any] = {
     "users": 0,
     "sessions": 0,
     "engagement_rate": None,
+    "average_engagement_time": None,
     "conversions": 0.0,
     "revenue": 0.0,
     "clicks": 0,
@@ -82,17 +83,21 @@ def aggregate_page_metrics(
                 func.sum(GA4Metric.users),
                 func.sum(GA4Metric.sessions),
                 func.avg(GA4Metric.engagement_rate),
+                func.avg(GA4Metric.average_engagement_time),
                 func.sum(GA4Metric.conversions),
                 func.sum(GA4Metric.revenue),
             )
             .where(*ga4_conditions)
             .group_by(GA4Metric.page_id)
         ).all()
-        for page_id, users, sessions, engagement, conversions, revenue in ga4_rows:
+        for page_id, users, sessions, engagement, engagement_time, conversions, revenue in ga4_rows:
             entry = result[page_id]
             entry["users"] = int(users or 0)
             entry["sessions"] = int(sessions or 0)
             entry["engagement_rate"] = float(engagement) if engagement is not None else None
+            entry["average_engagement_time"] = (
+                float(engagement_time) if engagement_time is not None else None
+            )
             entry["conversions"] = float(conversions or 0.0)
             entry["revenue"] = float(revenue or 0.0)
 

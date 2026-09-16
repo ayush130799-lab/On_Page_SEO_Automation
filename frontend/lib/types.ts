@@ -170,6 +170,8 @@ export interface WebsiteOverview {
   summary: {
     total_pages: number;
     average_seo_score: number | null;
+    average_traffic_potential_score: number | null;
+    average_lead_potential_score: number | null;
     critical_issues: number;
     high_issues: number;
     total_issues: number;
@@ -225,6 +227,8 @@ export interface PageListItem {
   priority_score: number | null;
   priority_band: PriorityBand | null;
   priority_rank: number | null;
+  traffic_potential_score: number | null;
+  lead_potential_score: number | null;
   ai_status: AiStatus;
   last_crawled_at: string | null;
   users: number;
@@ -376,6 +380,8 @@ export interface PageDetail {
   priority_score: number | null;
   priority_band: PriorityBand | null;
   priority_rank: number | null;
+  traffic_potential_score: number | null;
+  lead_potential_score: number | null;
   ai_status: AiStatus;
   ai_analysed_at: string | null;
   first_seen_at: string | null;
@@ -441,6 +447,190 @@ export interface PageDetailResponse {
     analysed_at: string | null;
   } | null;
   github_changes: GithubChange[];
+}
+
+// ── Phase 2: Keyword intelligence & cannibalization ─────────────────────────
+
+export interface KeywordOpportunityItem {
+  keyword: string;
+  tier: string;
+  demand_score: number | null;
+  ranking_opportunity_score: number | null;
+  intent_match_score: number | null;
+  business_relevance_score: number | null;
+  content_relevance_score: number | null;
+  competition_opportunity_score: number | null;
+  keyword_opportunity_score: number | null;
+  current_position: number | null;
+  current_impressions: number | null;
+  source: string | null;
+}
+
+export interface CannibalizationPageRef {
+  page_id: number;
+  url: string;
+  keyword_opportunity_score: number | null;
+  current_position: number | null;
+  current_impressions: number | null;
+  source: string | null;
+}
+
+export interface CannibalizationGroup {
+  keyword: string;
+  tier: string;
+  severity: PriorityBand;
+  pages: CannibalizationPageRef[];
+  recommended_canonical_page_id: number | null;
+  recommended_canonical_url: string | null;
+  explanation: string;
+}
+
+export interface IntentProfile {
+  page_id: number;
+  url: string;
+  detected_intent: string | null;
+  intent_confidence: number | null;
+  detection_method: string | null;
+  business_intent: string | null;
+  page_type: string | null;
+  intent_mismatch: boolean;
+  mismatch_severity: string | null;
+  mismatch_explanation: string | null;
+  mismatch_evidence: string | null;
+  primary_keywords: string[] | null;
+  secondary_keywords: string[] | null;
+  long_tail_keywords: string[] | null;
+  semantic_entities: string[] | null;
+  question_keywords: string[] | null;
+  keyword_opportunity_score: number | null;
+  keywords?: KeywordOpportunityItem[];
+  cannibalization?: CannibalizationGroup[];
+  analysed_at: string | null;
+}
+
+export interface IntentMismatchItem {
+  page_id: number;
+  url: string;
+  mismatch_severity: string;
+  business_intent: string | null;
+  detected_intent: string | null;
+  mismatch_explanation: string | null;
+  keyword_opportunity_score: number | null;
+  analysed_at: string | null;
+}
+
+// ── Keyword catalog (site-wide, roadmap §5.4) ───────────────────────────────
+
+export interface KeywordCatalogPageRef {
+  page_id: number;
+  url: string;
+  path: string;
+  keyword_opportunity_score: number | null;
+  current_position: number | null;
+  current_impressions: number | null;
+  source: string | null;
+}
+
+export interface KeywordCatalogEntry {
+  keyword: string;
+  tier: string;
+  demand_score: number | null;
+  ranking_opportunity_score: number | null;
+  intent_match_score: number | null;
+  business_relevance_score: number | null;
+  content_relevance_score: number | null;
+  competition_opportunity_score: number | null;
+  keyword_opportunity_score: number;
+  best_page_id: number;
+  best_page_url: string;
+  page_count: number;
+  pages: KeywordCatalogPageRef[];
+}
+
+// ── Scored recommendations (roadmap §10.2 / §7.4) ───────────────────────────
+
+export interface RecommendationScoreItem {
+  id: number;
+  page_id: number;
+  url: string;
+  path: string;
+  recommendation_type: string;
+  title: string | null;
+  current_state: string | null;
+  recommended_state: string | null;
+  search_intent: string | null;
+  primary_keyword: string | null;
+  search_impact_score: number | null;
+  user_activity_score: number | null;
+  business_impact_score: number | null;
+  overall_priority: number | null;
+  confidence_score: number | null;
+  priority_level: PriorityBand | null;
+  severity: Severity | null;
+  effort: string | null;
+  reason: string | null;
+  expected_outcome: string | null;
+  tier: string | null;
+  factors: Record<string, unknown> | null;
+  status: string;
+  scored_at: string | null;
+}
+
+export interface PageOpportunitiesResponse {
+  page_id: number;
+  url: string;
+  seo_score: number | null;
+  current_search_performance: {
+    impressions: number | null;
+    clicks: number | null;
+    ctr: number | null;
+    position: number | null;
+  };
+  current_user_activity: {
+    sessions: number | null;
+    engagement_rate: number | null;
+    conversions: number | null;
+    revenue: number | null;
+  };
+  search_intent: string | null;
+  page_type: string | null;
+  intent_mismatch: boolean;
+  mismatch_explanation: string | null;
+  target_keywords: {
+    primary: string[];
+    secondary: string[];
+    long_tail: string[];
+    question: string[];
+  };
+  keyword_opportunity_score: number | null;
+  competitor_analysis:
+    | { available: false; reason: string }
+    | {
+        available: true;
+        keyword: string | null;
+        analysed_at: string | null;
+        this_page_word_count: number | null;
+        competitor_median_word_count: number | null;
+        competitor_avg_h2_count: number | null;
+        missing_subtopics: string[] | null;
+        paa_questions: string[] | null;
+        fetched_count: number | null;
+      };
+  recommended_actions: {
+    recommendation_type: string;
+    title: string | null;
+    priority_level: PriorityBand | null;
+    search_impact_score: number | null;
+    user_activity_score: number | null;
+    overall_priority: number | null;
+    confidence_score: number | null;
+    effort: string | null;
+    current_state: string | null;
+    recommended_state: string | null;
+    reason: string | null;
+    expected_outcome: string | null;
+    status: string;
+  }[];
 }
 
 export interface WeightResponse {

@@ -8,13 +8,19 @@
 
 import type {
   ApiErrorBody,
+  CannibalizationGroup,
   CrawlRun,
   IntegrationSummary,
+  IntentMismatchItem,
+  IntentProfile,
+  KeywordCatalogEntry,
   PageDetailResponse,
   PageListItem,
+  PageOpportunitiesResponse,
   Paginated,
   PortfolioOverview,
   RecommendationListItem,
+  RecommendationScoreItem,
   SelectionDecision,
   TokenPair,
   TrendPoint,
@@ -203,6 +209,53 @@ function safeJson(text: string): unknown {
   } catch {
     return null;
   }
+}
+
+// ── Binary downloads ─────────────────────────────────────────────────────────
+// Excel/PDF-style exports return a file body, not JSON, so they bypass request<T> — but reuse
+// its auth header and error-envelope handling so a failed export reports the same way a failed
+// API call does.
+
+async function downloadFile(
+  path: string,
+  options: { method?: string; fallbackFilename?: string } = {},
+): Promise<{ blob: Blob; filename: string }> {
+  const { method = "POST", fallbackFilename = "download" } = options;
+  const token = tokens.access();
+
+  const response = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    const envelope = safeJson(text) as ApiErrorBody | null;
+    throw new ApiError(
+      response.status,
+      envelope?.error?.code ?? "http_error",
+      envelope?.error?.message ?? `Export failed with HTTP ${response.status}.`,
+      envelope?.error?.details,
+    );
+  }
+
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const match = /filename="?([^";]+)"?/i.exec(disposition);
+  const filename = match?.[1] ?? fallbackFilename;
+  const blob = await response.blob();
+  return { blob, filename };
+}
+
+/** Saves a downloaded blob to disk via a throwaway link — the standard no-library pattern. */
+export function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
 // ── Endpoints ──────────────────────────────────────────────────────────────
@@ -419,6 +472,10 @@ export const api = {
       request<
         { id: string; check_type: string; category: string; title: string; weight: number }[]
       >("/api/seo/rules"),
+    exportExcel: (websiteId: number) =>
+      downloadFile(`/api/websites/${websiteId}/export/excel`, {
+        fallbackFilename: `SEO_Audit_Report_${websiteId}.xlsx`,
+      }),
   },
 
   roadmap: {
@@ -473,6 +530,56 @@ export const api = {
         method: "POST",
         body: { wait: true, force },
       }),
+    getPageIntent: (websiteId: number, pageId: number) =>
+      request<IntentProfile>(`/api/websites/${websiteId}/pages/${pageId}/intent`),
+    cannibalization: (
+      websiteId: number,
+      params: { tier?: string; severity?: string; page_id?: number; limit?: number } = {},
+    ) =>
+      request<Paginated<CannibalizationGroup>>(
+        `/api/websites/${websiteId}/intent/cannibalization`,
+        { query: params },
+      ),
+    mismatches: (
+      websiteId: number,
+      params: { severity?: string; limit?: number; offset?: number } = {},
+    ) =>
+      request<Paginated<IntentMismatchItem>>(
+        `/api/websites/${websiteId}/intent/mismatches`,
+        { query: params },
+      ),
+  },
+
+  keywords: {
+    list: (
+      websiteId: number,
+      params: { tier?: string; q?: string; limit?: number; offset?: number } = {},
+    ) =>
+      request<Paginated<KeywordCatalogEntry>>(
+        `/api/websites/${websiteId}/keywords`,
+        { query: params },
+      ),
+  },
+
+  opportunities: {
+    list: (
+      websiteId: number,
+      params: {
+        priority_level?: string;
+        recommendation_type?: string;
+        status?: string;
+        limit?: number;
+        offset?: number;
+      } = {},
+    ) =>
+      request<Paginated<RecommendationScoreItem> & { priority_counts: Record<string, number> }>(
+        `/api/websites/${websiteId}/opportunities`,
+        { query: params },
+      ),
+    forPage: (websiteId: number, pageId: number) =>
+      request<PageOpportunitiesResponse>(
+        `/api/websites/${websiteId}/pages/${pageId}/opportunities`,
+      ),
   },
 
   experiments: {

@@ -11,14 +11,17 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from ...config import settings
-from ...core.deps import CurrentUser, DbSession, ReadableWebsite, WritableWebsite
+from ...core.deps import CurrentUser, DbSession, ReadableWebsite, WritableWebsite, get_website_for_read
 from ...core.errors import NotFoundError
 from ...core.ratelimit import default_rate_limit
 from ...db import SessionLocal
-from ...models import AIRecommendation, Page, Website
+from ...models import AIRecommendation, CompetitorAnalysis, Page, RecommendationScore, Website
 from ...models.intent import KeywordOpportunity, PageIntentProfile
 from ...schemas.common import Page as PageEnvelope
 from ...services.ai import analyse_website, available_providers, select_pages
+from ...services.intent import analyse_intent_for_website
+from ...services.intent.cannibalization import detect_cannibalization
+from ...services.metrics import aggregate_page_metrics
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["recommendations"])
@@ -255,8 +258,6 @@ def get_recommendation(recommendation_id: int, user: CurrentUser, db: DbSession)
     if row is None:
         raise NotFoundError(f"Recommendation {recommendation_id} was not found.")
 
-    from ...core.deps import get_website_for_read
-
     get_website_for_read(row.website_id, user, db)
     page = db.get(Page, row.page_id)
 
@@ -310,6 +311,25 @@ class KeywordOpportunityOut(BaseModel):
     source: str | None
 
 
+class CannibalizationPageOut(BaseModel):
+    page_id: int
+    url: str
+    keyword_opportunity_score: float | None
+    current_position: float | None
+    current_impressions: int | None
+    source: str | None
+
+
+class CannibalizationGroupOut(BaseModel):
+    keyword: str
+    tier: str
+    severity: str  # P0 | P1 | P2 | P3
+    pages: list[CannibalizationPageOut]
+    recommended_canonical_page_id: int | None
+    recommended_canonical_url: str | None
+    explanation: str
+
+
 class IntentProfileOut(BaseModel):
     page_id: int
     url: str
@@ -331,6 +351,8 @@ class IntentProfileOut(BaseModel):
     question_keywords: list[str] | None
     keyword_opportunity_score: float | None
     keywords: list[KeywordOpportunityOut] = []
+    #: Other pages on this site targeting the same primary/secondary keyword as this page.
+    cannibalization: list[CannibalizationGroupOut] = []
     analysed_at: Any = None
 
 
@@ -346,9 +368,6 @@ class MismatchListItem(BaseModel):
 
 
 def _run_intent_analysis(website_id: int, payload: dict[str, Any]) -> None:
-    from ...db import SessionLocal
-    from ...services.intent import analyse_intent_for_website
-
     db = SessionLocal()
     try:
         website = db.get(Website, website_id)
@@ -381,9 +400,6 @@ def analyse_intent(
     if not payload.wait:
         background_tasks.add_task(_run_intent_analysis, website.id, options)
         return {"website_id": website.id, "status": "queued"}
-
-    from ...db import SessionLocal
-    from ...services.intent import analyse_intent_for_website
 
     db_sync = SessionLocal()
     try:
@@ -433,6 +449,11 @@ def get_page_intent(
         .order_by(KeywordOpportunity.keyword_opportunity_score.desc().nullslast())
     ).all()
 
+    cannibalization = [
+        _cannibalization_group_out(group)
+        for group in detect_cannibalization(db, website.id, page_ids=[page_id])
+    ]
+
     return IntentProfileOut(
         page_id=page_id,
         url=page.url if page else "",
@@ -469,6 +490,29 @@ def get_page_intent(
             )
             for kw in keywords
         ],
+        cannibalization=cannibalization,
+    )
+
+
+def _cannibalization_group_out(group) -> CannibalizationGroupOut:
+    return CannibalizationGroupOut(
+        keyword=group.keyword,
+        tier=group.tier,
+        severity=group.severity,
+        pages=[
+            CannibalizationPageOut(
+                page_id=p.page_id,
+                url=p.url,
+                keyword_opportunity_score=p.keyword_opportunity_score,
+                current_position=p.current_position,
+                current_impressions=p.current_impressions,
+                source=p.source,
+            )
+            for p in group.pages
+        ],
+        recommended_canonical_page_id=group.recommended_canonical_page_id,
+        recommended_canonical_url=group.recommended_canonical_url,
+        explanation=group.explanation,
     )
 
 
@@ -496,8 +540,6 @@ def list_keyword_opportunities(
     several pages (each independently scored against its own page) is visible as one entry with
     its best-scoring page surfaced and every page that targets it listed.
     """
-    from ...models.intent import KeywordOpportunity
-
     stmt = select(KeywordOpportunity, Page.url, Page.path).join(
         Page, KeywordOpportunity.page_id == Page.id
     ).where(KeywordOpportunity.website_id == website.id)
@@ -552,6 +594,46 @@ def list_keyword_opportunities(
         "limit": limit,
         "offset": offset,
         "items": page_slice,
+    }
+
+
+@router.get(
+    "/websites/{website_id}/intent/cannibalization",
+    summary="Keywords targeted by 2+ pages on the same site (roadmap §2.1)",
+    tags=["intent"],
+)
+def list_cannibalization(
+    website: ReadableWebsite,
+    db: DbSession,
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    tier: str | None = Query(None, description="primary | secondary"),
+    severity: str | None = Query(None, description="P0 | P1 | P2 | P3"),
+    page_id: int | None = Query(
+        None, description="Only return groups that involve this page."
+    ),
+):
+    """Every primary/secondary keyword two or more pages compete for, worst first.
+
+    Distinct from ``/intent/mismatches``: a mismatch compares one page against its own traffic; a
+    cannibalization group compares two or more pages against *each other* for the same term. Both
+    read from data already collected — no search volume, ranking, or traffic figure is invented to
+    produce this list.
+    """
+    groups = detect_cannibalization(
+        db, website.id,
+        page_ids=[page_id] if page_id is not None else None,
+        tier=tier,
+        severity=severity,
+    )
+    total = len(groups)
+    page_slice = groups[offset:offset + limit]
+
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "items": [_cannibalization_group_out(g) for g in page_slice],
     }
 
 
@@ -634,8 +716,6 @@ def list_opportunities(
     separately, the confidence, and — per §9.1 — the reason and expected outcome, so no caller
     can render a bare number without its explanation.
     """
-    from ...models import RecommendationScore
-
     stmt = (
         select(RecommendationScore, Page.url, Page.path)
         .join(Page, RecommendationScore.page_id == Page.id)
@@ -719,9 +799,6 @@ def page_opportunities(
     computed automatically here, so this reports the most recent run rather than always fresh
     data; when none has been run yet, that is stated rather than invented.
     """
-    from ...models import CompetitorAnalysis, RecommendationScore
-    from ...services.metrics import aggregate_page_metrics
-
     page = db.scalar(
         select(Page).where(Page.id == page_id, Page.website_id == website.id)
     )

@@ -59,6 +59,9 @@ class PageListItem(ORMModel):
     priority_score: float | None
     priority_band: str | None
     priority_rank: int | None
+    #: 0-100 opportunity scores — see services/opportunity_scoring.py.
+    traffic_potential_score: float | None = None
+    lead_potential_score: float | None = None
     ai_status: str
     last_crawled_at: datetime | None
 
@@ -123,6 +126,9 @@ class PageDetail(ORMModel):
     priority_score: float | None
     priority_band: str | None
     priority_rank: int | None
+    #: 0-100 opportunity scores — see services/opportunity_scoring.py.
+    traffic_potential_score: float | None = None
+    lead_potential_score: float | None = None
     ai_status: str
     ai_analysed_at: datetime | None
 

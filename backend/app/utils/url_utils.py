@@ -71,17 +71,23 @@ def normalize_url(url: str, *, strip_tracking: bool = True) -> str:
         path = path.rstrip("/") or "/"
 
     query = parsed.query
-    if query and strip_tracking:
-        kept = []
-        for k, v in parse_qsl(query, keep_blank_values=True):
-            k_lower = k.lower()
-            if k_lower in NON_CONTENT_PARAMS:
-                continue
-            # Strip redundant first page pagination parameter (page=1, p=1, pg=1)
-            if k_lower in {"page", "p", "pg"} and v in {"1", "0"}:
-                continue
-            kept.append((k, v))
-        query = urlencode(sorted(kept)) if kept else ""
+    if query:
+        pairs = parse_qsl(query, keep_blank_values=True)
+        if strip_tracking:
+            kept = []
+            for k, v in pairs:
+                k_lower = k.lower()
+                if k_lower in NON_CONTENT_PARAMS:
+                    continue
+                # Strip redundant first page pagination parameter (page=1, p=1, pg=1)
+                if k_lower in {"page", "p", "pg"} and v in {"1", "0"}:
+                    continue
+                kept.append((k, v))
+            pairs = kept
+        # Sorted regardless of strip_tracking: two hrefs differing only in parameter order
+        # (?a=1&b=2 vs ?b=2&a=1) are the same destination, and this is purely a canonical
+        # ordering — unlike NON_CONTENT_PARAMS above, it never discards information.
+        query = urlencode(sorted(pairs)) if pairs else ""
 
     return urlunparse((scheme, netloc, path, "", query, ""))
 
@@ -212,8 +218,15 @@ def is_safe_url(url: str, allow_local: bool = False) -> bool:
     return True
 
 
-def absolute_url(base: str, href: str) -> str | None:
-    """Resolve ``href`` against ``base``, returning ``None`` for non-navigable links."""
+def absolute_url(base: str, href: str, *, strip_tracking: bool = True) -> str | None:
+    """Resolve ``href`` against ``base``, returning ``None`` for non-navigable links.
+
+    ``strip_tracking`` defaults to ``True`` for the crawl frontier and other "is this the same
+    destination I already know about" uses, where collapsing ``?utm_source=`` variants is exactly
+    the point. Pass ``False`` when the caller needs the link's true, distinct identity — reporting
+    how many links a page actually contains must not silently merge a tracked CTA link with an
+    untracked one to the same target, which is what always stripping did.
+    """
     if not href:
         return None
     href = href.strip()
@@ -227,7 +240,7 @@ def absolute_url(base: str, href: str) -> str | None:
         href = f"https://{href}"
 
     try:
-        url = normalize_url(urljoin(base, href))
+        url = normalize_url(urljoin(base, href), strip_tracking=strip_tracking)
     except ValueError:
         return None
     return url if is_http_url(url) else None

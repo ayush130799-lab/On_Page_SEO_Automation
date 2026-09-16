@@ -18,6 +18,8 @@ import {
   BandBadge,
   Card,
   ErrorNote,
+  IntentBadge,
+  MismatchAlert,
   PageHeader,
   ScoreBadge,
   SeverityBadge,
@@ -35,7 +37,12 @@ import {
   formatPercent,
   formatRelative,
 } from "@/lib/format";
-import type { AiFinding, CompetitorAnalysisResponse, PageDetailResponse } from "@/lib/types";
+import type {
+  AiFinding,
+  CompetitorAnalysisResponse,
+  IntentProfile,
+  PageDetailResponse,
+} from "@/lib/types";
 
 export default function PageDetailRoute() {
   return (
@@ -60,6 +67,9 @@ function PageDetailView() {
   const [analysingCompetitors, setAnalysingCompetitors] = useState(false);
   const [serpConfigured, setSerpConfigured] = useState(true);
 
+  // Keyword intelligence (Phase 2: intent, keyword tiers, cannibalization)
+  const [intentProfile, setIntentProfile] = useState<IntentProfile | null>(null);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -67,19 +77,23 @@ function PageDetailView() {
       setData(pageData);
       setError("");
 
-      // Fetch live SERP competitor analysis & status in parallel
+      // Fetch live SERP competitor analysis & status, and keyword intelligence, in parallel.
+      // Both are optional enrichments — a page that hasn't been through intent analysis or
+      // competitor benchmarking yet simply renders without them, not as an error.
       try {
-        const [serpStatus, compData] = await Promise.all([
+        const [serpStatus, compData, intent] = await Promise.all([
           api.competitors.status(),
           api.competitors.get(pageData.page.website_id, pageId).catch(() => null),
+          api.intent.getPageIntent(pageData.page.website_id, pageId).catch(() => null),
         ]);
         setSerpConfigured(serpStatus.configured);
         if (compData && compData.available) {
           setCompetitor(compData);
           if (compData.keyword) setCompetitorKeyword(compData.keyword);
         }
+        setIntentProfile(intent);
       } catch {
-        // Non-blocking for competitor data
+        // Non-blocking for competitor / keyword intelligence data
       }
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "Could not load this page.");
@@ -184,7 +198,7 @@ function PageDetailView() {
         </div>
       )}
 
-      <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-6">
+      <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-5">
         <Stat
           label="Priority score"
           value={
@@ -210,6 +224,16 @@ function PageDetailView() {
           }
         />
         <Stat
+          label="Traffic potential"
+          value={page.traffic_potential_score?.toFixed(1) ?? "—"}
+          hint="0-100 · organic traffic opportunity"
+        />
+        <Stat
+          label="Lead potential"
+          value={page.lead_potential_score?.toFixed(1) ?? "—"}
+          hint="0-100 · business/lead opportunity"
+        />
+        <Stat
           label="Issues"
           value={formatNumber(page.issue_count)}
           hint={page.highest_severity ?? undefined}
@@ -222,6 +246,11 @@ function PageDetailView() {
           hint={
             metrics.position !== null ? `Avg position ${metrics.position.toFixed(1)}` : undefined
           }
+        />
+        <Stat
+          label="CTR"
+          value={metrics.ctr !== null ? formatPercent(metrics.ctr, 2) : "—"}
+          hint={`${metrics.window_days}d`}
         />
         <Stat
           label="Conversions"
@@ -386,6 +415,142 @@ function PageDetailView() {
               </div>
             </Card>
           )}
+
+          {/* Keyword Intelligence Card (Phase 2: AI-based keyword identification) */}
+          <Card
+            title="Keyword Intelligence"
+            action={
+              intentProfile ? (
+                <span className="text-xs text-slate-500">
+                  {intentProfile.detection_method} · {formatRelative(intentProfile.analysed_at)}
+                </span>
+              ) : undefined
+            }
+          >
+            {!intentProfile ? (
+              <p className="text-sm text-slate-400">
+                No keyword intelligence yet. Run intent analysis for this website (from the
+                website overview page) to generate primary/secondary keywords, search intent,
+                ranking opportunity and cannibalization checks for this URL.
+              </p>
+            ) : (
+              <>
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <IntentBadge intent={intentProfile.detected_intent} />
+                  {intentProfile.page_type && (
+                    <span className="chip bg-slate-500/15 text-slate-300 ring-slate-500/30">
+                      {intentProfile.page_type}
+                    </span>
+                  )}
+                  {intentProfile.keyword_opportunity_score !== null && (
+                    <span className="chip bg-indigo-500/15 text-indigo-300 ring-indigo-500/30 font-medium">
+                      Keyword opportunity {Math.round(intentProfile.keyword_opportunity_score)}/100
+                    </span>
+                  )}
+                  {intentProfile.intent_confidence !== null && (
+                    <span className="text-xs text-slate-500">
+                      Confidence {formatPercent(intentProfile.intent_confidence, 0)}
+                    </span>
+                  )}
+                </div>
+
+                {intentProfile.intent_mismatch && (
+                  <div className="mb-3">
+                    <MismatchAlert
+                      severity={intentProfile.mismatch_severity ?? "P2"}
+                      businessIntent={intentProfile.business_intent}
+                      detectedIntent={intentProfile.detected_intent}
+                      explanation={intentProfile.mismatch_explanation}
+                    />
+                  </div>
+                )}
+
+                {(intentProfile.cannibalization ?? []).length > 0 && (
+                  <div className="mb-4 space-y-2">
+                    {(intentProfile.cannibalization ?? []).map((group) => (
+                      <div
+                        key={`${group.keyword}-${group.tier}`}
+                        className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5"
+                        role="alert"
+                      >
+                        <div className="mb-1 flex flex-wrap items-center gap-2">
+                          <BandBadge band={group.severity} />
+                          <span className="text-sm font-medium text-amber-200">
+                            Cannibalization: &ldquo;{group.keyword}&rdquo;
+                          </span>
+                          <span className="text-xs text-slate-500">
+                            {group.pages.length} pages compete
+                          </span>
+                        </div>
+                        <p className="text-xs leading-relaxed text-slate-300">
+                          {group.explanation}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <KeywordTierList
+                    label="Primary keywords"
+                    keywords={intentProfile.primary_keywords}
+                    tone="emerald"
+                  />
+                  <KeywordTierList
+                    label="Secondary keywords"
+                    keywords={intentProfile.secondary_keywords}
+                    tone="sky"
+                  />
+                  <KeywordTierList
+                    label="Long-tail"
+                    keywords={intentProfile.long_tail_keywords}
+                    tone="slate"
+                  />
+                  <KeywordTierList
+                    label="Questions"
+                    keywords={intentProfile.question_keywords}
+                    tone="violet"
+                  />
+                </div>
+
+                {(intentProfile.keywords ?? []).length > 0 && (
+                  <div className="mt-4 border-t border-slate-800 pt-3">
+                    <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Keyword detail
+                    </h3>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="text-left text-slate-500">
+                            <th className="pb-1.5 pr-3 font-medium">Keyword</th>
+                            <th className="pb-1.5 pr-3 font-medium">Tier</th>
+                            <th className="pb-1.5 pr-3 font-medium">Position</th>
+                            <th className="pb-1.5 pr-3 font-medium">Opportunity</th>
+                            <th className="pb-1.5 font-medium">Source</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60">
+                          {(intentProfile.keywords ?? []).slice(0, 15).map((kw) => (
+                            <tr key={`${kw.keyword}-${kw.tier}`}>
+                              <td className="py-1.5 pr-3 text-slate-200">{kw.keyword}</td>
+                              <td className="py-1.5 pr-3 text-slate-400">{kw.tier}</td>
+                              <td className="tnum py-1.5 pr-3 text-slate-300">
+                                {kw.current_position?.toFixed(1) ?? "—"}
+                              </td>
+                              <td className="tnum py-1.5 pr-3 text-slate-300">
+                                {kw.keyword_opportunity_score?.toFixed(0) ?? "—"}
+                              </td>
+                              <td className="py-1.5 text-slate-500">{kw.source ?? "—"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </Card>
 
           {/* Live SERP & Competitor Benchmark Card (Phase 4) */}
           <Card
@@ -792,6 +957,40 @@ function FindingCard({ finding }: { finding: AiFinding }) {
         <p className="mt-2 text-xs text-emerald-300/90">Impact: {finding.expected_impact}</p>
       )}
     </article>
+  );
+}
+
+function KeywordTierList({
+  label,
+  keywords,
+  tone,
+}: {
+  label: string;
+  keywords: string[] | null | undefined;
+  tone: "emerald" | "sky" | "slate" | "violet";
+}) {
+  if (!keywords || keywords.length === 0) return null;
+
+  const toneClass = {
+    emerald: "bg-emerald-500/10 text-emerald-300 ring-emerald-500/20",
+    sky: "bg-sky-500/10 text-sky-300 ring-sky-500/20",
+    slate: "bg-slate-500/10 text-slate-300 ring-slate-500/20",
+    violet: "bg-violet-500/10 text-violet-300 ring-violet-500/20",
+  }[tone];
+
+  return (
+    <div>
+      <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
+        {label}
+      </h3>
+      <div className="flex flex-wrap gap-1.5">
+        {keywords.map((kw) => (
+          <span key={kw} className={`chip ${toneClass}`}>
+            {kw}
+          </span>
+        ))}
+      </div>
+    </div>
   );
 }
 

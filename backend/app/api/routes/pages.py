@@ -45,6 +45,8 @@ router = APIRouter(prefix="/api", tags=["pages"])
 SORTABLE = {
     "priority_score": Page.priority_score,
     "seo_score": Page.seo_score,
+    "traffic_potential_score": Page.traffic_potential_score,
+    "lead_potential_score": Page.lead_potential_score,
     "issue_count": Page.issue_count,
     "url": Page.url,
     "last_crawled_at": Page.last_crawled_at,

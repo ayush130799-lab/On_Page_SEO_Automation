@@ -34,7 +34,7 @@ body {
 }
 
 .chip {
-  @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset;
+  @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset whitespace-nowrap;
 }
 
 .btn {
@@ -80,6 +80,14 @@ table.data thead th {
 
 table.data tbody td {
   @apply border-b border-slate-800/60 px-3 py-2.5 align-top;
+}
+
+table.data.compact thead th {
+  @apply px-1.5 py-2 text-xs;
+}
+
+table.data.compact tbody td {
+  @apply px-1.5 py-2;
 }
 
 table.data tbody tr:hover {

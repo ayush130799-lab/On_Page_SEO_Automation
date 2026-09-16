@@ -244,6 +244,12 @@ def website_overview(
 
     active = Page.is_active.is_(True)
 
+    opportunity_avg = db.execute(
+        select(
+            func.avg(Page.traffic_potential_score), func.avg(Page.lead_potential_score)
+        ).where(Page.website_id == website.id, active)
+    ).one()
+
     seo_bands = dict(
         db.execute(
             select(Page.seo_category, func.count(Page.id))
@@ -438,6 +444,12 @@ def website_overview(
         "summary": {
             "total_pages": website.total_pages,
             "average_seo_score": website.average_seo_score,
+            "average_traffic_potential_score": (
+                round(float(opportunity_avg[0]), 1) if opportunity_avg[0] is not None else None
+            ),
+            "average_lead_potential_score": (
+                round(float(opportunity_avg[1]), 1) if opportunity_avg[1] is not None else None
+            ),
             "critical_issues": issues_by_severity.get(Severity.CRITICAL, 0),
             "high_issues": issues_by_severity.get(Severity.HIGH, 0),
             "total_issues": sum(issues_by_severity.values()),

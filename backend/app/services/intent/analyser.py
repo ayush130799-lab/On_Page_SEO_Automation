@@ -22,8 +22,10 @@ from typing import Any, Sequence
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ...config import settings
 from ...models import AIRecommendation, GSCMetric, Page, SemrushMetric, Website
 from ...models.intent import KeywordOpportunity, PageIntentProfile
+from ..opportunity_scoring import compute_lead_potential, compute_traffic_potential
 from .classifier import (
     IntentClassificationResult,
     classify_by_rules,
@@ -45,6 +47,11 @@ class _AnalysisContext:
     recommendations: dict[int, Any] = field(default_factory=dict)
     profiles: dict[int, Any] = field(default_factory=dict)
     business_relevance: dict[int, float] = field(default_factory=dict)
+    #: Raw GSC/GA4 aggregates per page, for Traffic/Lead Potential — see opportunity_scoring.py.
+    metrics: dict[int, dict[str, Any]] = field(default_factory=dict)
+    site_revenue: float = 0.0
+    site_conversions: float = 0.0
+    business_value_patterns: tuple[str, ...] = ()
 
 
 #: Commit after this many pages so a crash, restart or timeout partway through a large site
@@ -125,6 +132,13 @@ def _recommendations_bulk(db: Session, page_ids: list[int]) -> dict[int, AIRecom
         for row in rows:
             result.setdefault(row.page_id, row)
     return result
+
+
+def _page_metrics_bulk(db: Session, page_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """GSC/GA4 aggregates for every page, for Traffic/Lead Potential (opportunity_scoring.py)."""
+    from ..metrics import aggregate_page_metrics
+
+    return aggregate_page_metrics(db, page_ids, window_days=settings.priority_metric_window_days)
 
 
 def _profiles_bulk(db: Session, page_ids: list[int]) -> dict[int, PageIntentProfile]:
@@ -317,12 +331,19 @@ def analyse_intent_for_website(
         return outcome
 
     ids = [p.id for p in pages]
+    page_metrics = _page_metrics_bulk(db, ids)
+    site_revenue = sum(float(m.get("revenue") or 0) for m in page_metrics.values())
+    site_conversions = sum(float(m.get("conversions") or 0) for m in page_metrics.values())
     context = _AnalysisContext(
         gsc=_gsc_queries_bulk(db, ids),
         semrush=_semrush_keywords_bulk(db, ids),
         recommendations=_recommendations_bulk(db, ids),
         profiles=_profiles_bulk(db, ids),
         business_relevance=_business_relevance_by_page(db, website, ids),
+        metrics=page_metrics,
+        site_revenue=site_revenue,
+        site_conversions=site_conversions,
+        business_value_patterns=tuple(settings.business_value_paths or ()),
     )
 
     for index, page in enumerate(pages, start=1):
@@ -376,6 +397,29 @@ def _process_page(
             and existing.content_hash == page.content_hash
         )
         if unchanged:
+            # Even if content hasn't changed, still recompute opportunity scores if they
+            # are missing — this backfills pages that were classified before the
+            # traffic_potential_score / lead_potential_score columns were added.
+            if page.traffic_potential_score is None or page.lead_potential_score is None:
+                page_metrics = context.metrics.get(page.id, {})
+                traffic_score, _ = compute_traffic_potential(
+                    metrics=page_metrics,
+                    keyword_opportunity_score=existing.keyword_opportunity_score,
+                    intent_confidence=existing.intent_confidence,
+                    seo_score=page.seo_score,
+                )
+                lead_score, _ = compute_lead_potential(
+                    traffic_potential_score=traffic_score,
+                    metrics=page_metrics,
+                    detected_intent=existing.detected_intent,
+                    site_revenue=context.site_revenue,
+                    site_conversions=context.site_conversions,
+                    path=page.path,
+                    high_value_patterns=context.business_value_patterns,
+                )
+                page.traffic_potential_score = traffic_score
+                page.lead_potential_score = lead_score
+                outcome.classified += 1
             return
 
     # ── Fetch raw data (all pre-loaded in bulk) ──────────────────────────────
@@ -442,6 +486,26 @@ def _process_page(
         },
         business_relevance=context.business_relevance.get(page.id, 0.50),
     )
+
+    # ── Traffic / Lead Potential ─────────────────────────────────────────────
+    page_metrics = context.metrics.get(page.id, {})
+    traffic_score, _traffic_evidence = compute_traffic_potential(
+        metrics=page_metrics,
+        keyword_opportunity_score=kw_result.page_keyword_opportunity_score,
+        intent_confidence=classification.confidence,
+        seo_score=page.seo_score,
+    )
+    lead_score, _lead_evidence = compute_lead_potential(
+        traffic_potential_score=traffic_score,
+        metrics=page_metrics,
+        detected_intent=classification.intent,
+        site_revenue=context.site_revenue,
+        site_conversions=context.site_conversions,
+        path=page.path,
+        high_value_patterns=context.business_value_patterns,
+    )
+    page.traffic_potential_score = traffic_score
+    page.lead_potential_score = lead_score
 
     # ── Persist ──────────────────────────────────────────────────────────────
     _upsert_intent_profile(

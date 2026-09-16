@@ -32,6 +32,7 @@ from ...models import (
     Website,
 )
 from ..metrics import aggregate_page_metrics
+from ..opportunity_scoring import compute_lead_potential, compute_traffic_potential
 from .components import (
     ga4_activity_raw,
     gsc_search_raw,
@@ -260,12 +261,80 @@ def persist_priorities(db: Session, website: Website, result: ScoringResult) -> 
     return result.pages_scored
 
 
+def backfill_opportunity_scores(db: Session, website: Website) -> int:
+    """Compute and save traffic_potential_score / lead_potential_score for every active page.
+
+    Runs as a lightweight pass after priority scoring so the dashboard always has these scores
+    without requiring a separate intent-analysis step. Uses intent profile data when available;
+    falls back to neutral components (0.5) when not yet analysed.
+    """
+    from ...models.intent import PageIntentProfile
+
+    pages = db.scalars(
+        select(Page).where(Page.website_id == website.id, Page.is_active.is_(True))
+    ).all()
+    if not pages:
+        return 0
+
+    page_ids = [p.id for p in pages]
+    metrics = aggregate_page_metrics(db, page_ids)
+
+    # Load intent profiles in one query — absent = neutral values
+    profiles: dict[int, PageIntentProfile] = {
+        profile.page_id: profile
+        for profile in db.scalars(
+            select(PageIntentProfile).where(PageIntentProfile.page_id.in_(page_ids))
+        )
+    }
+
+    # Site-level revenue/conversions for lead potential denominator
+    site_revenue = sum(float(m.get("revenue") or 0) for m in metrics.values())
+    site_conversions = sum(float(m.get("conversions") or 0) for m in metrics.values())
+    high_value_patterns = tuple(settings.business_value_paths or ())
+
+    updated = 0
+    for page in pages:
+        profile = profiles.get(page.id)
+        page_metrics = metrics.get(page.id, {})
+
+        traffic_score, _ = compute_traffic_potential(
+            metrics=page_metrics,
+            keyword_opportunity_score=profile.keyword_opportunity_score if profile else None,
+            intent_confidence=profile.intent_confidence if profile else None,
+            seo_score=page.seo_score,
+        )
+        lead_score, _ = compute_lead_potential(
+            traffic_potential_score=traffic_score,
+            metrics=page_metrics,
+            detected_intent=profile.detected_intent if profile else None,
+            site_revenue=site_revenue,
+            site_conversions=site_conversions,
+            path=page.path,
+            high_value_patterns=high_value_patterns,
+        )
+        page.traffic_potential_score = traffic_score
+        page.lead_potential_score = lead_score
+        updated += 1
+
+    db.commit()
+    logger.info(
+        "Backfilled opportunity scores for %d pages on website %s.", updated, website.id
+    )
+    return updated
+
+
 def score_website(
     db: Session, website: Website, *, window_days: int | None = None
 ) -> ScoringResult:
     """Compute and persist priority scores for a website."""
     result = compute_priorities(db, website, window_days=window_days)
     persist_priorities(db, website, result)
+    try:
+        backfill_opportunity_scores(db, website)
+    except Exception as exc:
+        logger.warning(
+            "Opportunity score backfill failed for website %s: %s", website.id, exc
+        )
     return result
 
 

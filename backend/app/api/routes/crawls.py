@@ -24,22 +24,36 @@ router = APIRouter(prefix="/api", tags=["crawls"])
 
 ACTIVE_STATUSES = (RunStatus.QUEUED, RunStatus.RUNNING)
 
-# A run with no progress update in this long is presumed orphaned (e.g. by a server restart)
-# rather than merely slow. Large sites spend part of the run in single non-incremental phases
-# (auditing all pages in one pass, persisting them, scoring) that don't touch updated_at in
-# between — on a resource-constrained host those phases alone can run past a few minutes, so
-# this stays generous rather than racing a legitimately still-working crawl.
+# A QUEUED run that never started (server restart / crash before the background task fired)
+# should be cleared quickly — a run transitions from QUEUED → RUNNING within a second or two
+# under normal operation, so a 3-minute window is already generous.
+STALE_QUEUED_TIMEOUT_SECONDS = 180
+
+# A RUNNING run with no progress update in this long is presumed orphaned (e.g. by an OOM kill
+# or a server restart mid-crawl). Large sites spend time in single non-incremental audit/persist
+# phases that don't touch updated_at, so this stays generous on the high end.
 STALE_RUN_TIMEOUT_SECONDS = 1200
 
 
 def _execute_crawl(crawl_run_id: int) -> None:
-    """Run the pipeline in its own session (background task / worker entry point)."""
+    """Run the pipeline in its own session (background task / worker entry point).
+
+    Creates a brand-new event loop so this function is safe to call from any thread,
+    including FastAPI's BackgroundTasks thread pool on Windows where a stale loop
+    reference from the web-server thread can cause asyncio.run() to raise RuntimeError.
+    """
     db = SessionLocal()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        asyncio.run(run_crawl_pipeline(db, crawl_run_id))
+        loop.run_until_complete(run_crawl_pipeline(db, crawl_run_id))
     except Exception as exc:
         logger.exception("Crawl run %s did not complete: %s", crawl_run_id, exc)
     finally:
+        try:
+            loop.close()
+        except Exception:
+            pass
         db.close()
 
 
@@ -97,7 +111,15 @@ def start_crawl(
         ref_time = run.updated_at or run.started_at or run.created_at
         if ref_time:
             ref_utc = ref_time.replace(tzinfo=timezone.utc) if ref_time.tzinfo is None else ref_time
-            if (now - ref_utc).total_seconds() > STALE_RUN_TIMEOUT_SECONDS:
+            age_seconds = (now - ref_utc).total_seconds()
+            # QUEUED runs must start within seconds — use a short timeout so a server
+            # restart doesn't block the website for 20 minutes.
+            timeout = (
+                STALE_QUEUED_TIMEOUT_SECONDS
+                if run.status == RunStatus.QUEUED
+                else STALE_RUN_TIMEOUT_SECONDS
+            )
+            if age_seconds > timeout:
                 run.status = RunStatus.FAILED
                 run.stage = "failed"
                 run.error = "Crawl process interrupted by server restart or timed out."
@@ -175,7 +197,13 @@ def get_crawl(crawl_run_id: int, user: CurrentUser, db: DbSession):
         ref_time = run.updated_at or run.started_at or run.created_at
         if ref_time:
             ref_utc = ref_time.replace(tzinfo=timezone.utc) if ref_time.tzinfo is None else ref_time
-            if (datetime.now(timezone.utc) - ref_utc).total_seconds() > STALE_RUN_TIMEOUT_SECONDS:
+            age_seconds = (datetime.now(timezone.utc) - ref_utc).total_seconds()
+            timeout = (
+                STALE_QUEUED_TIMEOUT_SECONDS
+                if run.status == RunStatus.QUEUED
+                else STALE_RUN_TIMEOUT_SECONDS
+            )
+            if age_seconds > timeout:
                 run.status = RunStatus.FAILED
                 run.stage = "failed"
                 run.error = "Crawl process interrupted by server restart or timed out."

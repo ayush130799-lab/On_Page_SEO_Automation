@@ -16,6 +16,7 @@ import gzip
 
 import httpx
 import pytest
+from bs4 import BeautifulSoup
 
 from app.services.crawler.extractor import empty_page, extract_page, is_tracking_pixel
 from app.services.crawler.fetcher import fetch_url
@@ -91,6 +92,20 @@ class TestJavaScriptRendered:
     SHELL = doc('<div id="root"></div><script src="/app.js"></script>')
     RENDERED = doc('<main><h1>Loaded by JS</h1><p>%s</p></main>' % ("content " * 80))
 
+    #: A Next.js-style page whose nav and footer chrome alone clear the 400-char threshold, but
+    #: whose <main> (the part a client fetches after mount) is still an empty shell. Before the
+    #: fix, needs_rendering() measured the *whole* body, so this chrome bulk alone satisfied
+    #: "content-rich, skip rendering" and the real content was never fetched.
+    CHROME_HEAVY_THIN_MAIN = doc(
+        "<nav>"
+        + " ".join(f"Nav link {i}" for i in range(40))
+        + "</nav>"
+        + '<main id="root"></main>'
+        + "<footer>"
+        + " ".join(f"Footer link {i}" for i in range(40))
+        + "</footer>"
+    )
+
     def test_empty_shell_is_flagged_for_rendering(self):
         assert needs_rendering(self.SHELL) is True
 
@@ -99,6 +114,47 @@ class TestJavaScriptRendered:
 
     def test_render_mode_never_short_circuits(self):
         assert needs_rendering(self.SHELL, render_mode="never") is False
+
+    #: A common component-based template shape: <main> wraps only a hero/header fragment, and the
+    #: real article body — practical guide, FAQ, related content — lives in sibling <section>s
+    #: outside <main> entirely. Before the fix, extract_page() trusted <main> unconditionally and
+    #: reported this as a ~5-word page when the real body is well over a hundred words.
+    MAIN_WRAPS_ONLY_A_HERO_FRAGMENT = doc(
+        "<main><h1>Phalen Gaon Ki Holi</h1></main>"
+        "<section><h2>Where Devotion Meets Fire</h2><p>%s</p></section>"
+        "<section><h2>Practical Guide</h2><p>%s</p></section>"
+        % (("real article content " * 40), ("more genuine body text " * 40))
+    )
+
+    def test_a_landmark_wrapping_only_a_fragment_falls_back_to_the_full_body(self):
+        page = parse(self.MAIN_WRAPS_ONLY_A_HERO_FRAGMENT)
+        assert page.content_scope == "body"
+        assert page.word_count > 100
+        # The hero H1 and both section H2s are still counted — heading extraction is never
+        # scoped to the content landmark.
+        assert page.h1 == "Phalen Gaon Ki Holi"
+        assert page.h2_count == 2
+
+    def test_a_landmark_that_genuinely_holds_the_content_is_still_trusted(self):
+        # Guard against over-correction: a real article in <main> next to a real (but smaller)
+        # related-content widget outside it must still scope to <main>, not fall back to body.
+        html = doc(
+            "<main><h1>Real Article</h1><p>%s</p></main>"
+            "<section><h2>Related posts</h2><p>%s</p></section>"
+            % (("substantial genuine article content " * 60), ("related link text " * 5))
+        )
+        page = parse(html)
+        assert page.content_scope == "main"
+
+    def test_chrome_bulk_does_not_mask_a_thin_main_content_shell(self):
+        # Sanity check the fixture reproduces the original bug: whole-body text (the old, buggy
+        # measure) clears the 400-char threshold on nav/footer bulk alone, even though <main>
+        # itself is empty.
+        whole_body_text = BeautifulSoup(self.CHROME_HEAVY_THIN_MAIN, "lxml").body.get_text(
+            " ", strip=True
+        )
+        assert len(whole_body_text) > 400
+        assert needs_rendering(self.CHROME_HEAVY_THIN_MAIN) is True
 
     def test_shell_extraction_is_thin_and_rendered_is_not(self):
         # The point of rendering: the same URL yields a real H1 only after the DOM is built.
@@ -373,6 +429,47 @@ class TestInternalLinks:
     def test_anchor_text_is_captured(self):
         page = parse(self.HTML)
         assert any(link.anchor_text == "About" for link in page.links)
+
+
+class TestLinkCountReflectsTrackingParamVariants:
+    """§ reported internal/external link counts must not silently merge distinct anchors that
+    happen to point at the same page with different tracking parameters — a CTA link tagged
+    ?utm_source=cta and a plain "related posts" link to the same article are two real anchors a
+    reader (and Google) can click, and undercounting them was reported against a third-party
+    checker that does not collapse them the same way."""
+
+    def test_two_anchors_differing_only_by_tracking_param_are_both_counted(self):
+        html = doc(
+            '<a href="/post?utm_source=cta">Read more</a>'
+            '<a href="/post?utm_source=footer">Read more</a>'
+        )
+        page = parse(html)
+        assert page.internal_link_count == 2
+        assert "https://example.com/post?utm_source=cta" in page.internal_links
+        assert "https://example.com/post?utm_source=footer" in page.internal_links
+
+    def test_two_anchors_differing_only_by_tracking_param_are_both_counted_externally(self):
+        html = doc(
+            '<a href="https://other.test/x?utm_source=cta">A</a>'
+            '<a href="https://other.test/x?utm_source=footer">B</a>'
+        )
+        page = parse(html)
+        assert page.external_link_count == 2
+
+    def test_a_literal_duplicate_anchor_is_still_deduplicated(self):
+        html = doc('<a href="/a">1</a><a href="/a">2</a><a href="/a/">3</a>')
+        page = parse(html)
+        assert page.internal_link_count == 1
+
+    def test_content_bearing_query_params_still_distinguish_links(self):
+        html = doc('<a href="/product?id=7">A</a><a href="/product?id=8">B</a>')
+        page = parse(html)
+        assert page.internal_link_count == 2
+
+    def test_parameter_order_alone_does_not_double_count(self):
+        html = doc('<a href="/p?a=1&amp;b=2">A</a><a href="/p?b=2&amp;a=1">B</a>')
+        page = parse(html)
+        assert page.internal_link_count == 1
 
 
 class TestExternalLinks:

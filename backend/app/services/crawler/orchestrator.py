@@ -301,8 +301,14 @@ class Crawler:
                 # entire sections: a paginated listing canonicalised to page 1 would contribute
                 # none of its item links. Parameter explosion is bounded by the frontier cap and
                 # the exclude patterns, not by discarding links.
+                #
+                # page.internal_links now preserves tracking-parameter variants (see extractor.py)
+                # so the *reported* link count reflects what the page actually contains. The
+                # frontier still must not treat "?utm_source=a" and "?utm_source=b" as two pages
+                # to crawl, so it re-normalises here rather than relying on the extractor to have
+                # already collapsed them.
                 for link in page.internal_links:
-                    self._enqueue(link)
+                    self._enqueue(normalize_url(link))
 
                 for hop in page.redirect_chain:
                     self._enqueue(hop)
@@ -436,10 +442,20 @@ class Crawler:
         """
         inbound: dict[str, int] = {}
         for page in self.pages:
+            # page.internal_links preserves tracking-parameter variants for accurate reporting
+            # (see extractor.py), but status_by_url and every other page's url/final_url are
+            # keyed by the tracking-stripped form actually fetched. Re-normalising here is what
+            # makes "?utm_source=cta" match the plain URL it actually points at, rather than
+            # missing every lookup and reporting every such link as neither broken nor inbound.
+            normalised_links = [normalize_url(link) for link in page.internal_links]
             page.broken_link_count = sum(
-                1 for link in page.internal_links if self.status_by_url.get(link, 200) >= 400
+                1 for link in normalised_links if self.status_by_url.get(link, 200) >= 400
             )
-            for link in page.internal_links:
+            # Inbound counts distinct *linking pages*, not raw anchors: a page that links to the
+            # same target three times via different tracking-tagged hrefs is still only one page
+            # pointing at it, not three. Deduplicating per source page here is what keeps that
+            # true now that internal_links itself no longer collapses tracking-param variants.
+            for link in set(normalised_links):
                 inbound[link] = inbound.get(link, 0) + 1
 
         for page in self.pages:

@@ -26,6 +26,15 @@ answers and different tools pick different ones:
     that subtree is measured — that is the strongest available signal for "the content of this
     page" and it is what thin-content rules should judge.
 
+    That landmark is trusted only when it actually captures most of the page's real content.
+    Some templates wrap a small header/hero fragment in ``<main>`` and place the rest of the body
+    — a FAQ block, a "practical guide" section, related-content links — as plain sibling
+    ``<section>``s outside it. Scoping unconditionally to a ``<main>`` that small silently reports
+    a normal-length page as almost empty. When the landmark's own text is both absolutely thin
+    and a small fraction of the chrome-free body, the measurement falls back to the whole
+    chrome-free body instead (``content_scope`` is then ``"body"``, not the landmark's tag name,
+    so the fallback is visible rather than silent).
+
 ``word_count`` is the main-content measure because that is what a thin-content rule must judge.
 All three are stored so a discrepancy against another tool can be explained rather than argued.
 
@@ -57,6 +66,16 @@ _NON_RENDERING_TAGS = ("script", "style", "template", "svg", "iframe", "noscript
 
 #: Site chrome — excluded from the main-content measure only.
 _CHROME_TAGS = ("nav", "header", "footer", "aside", "form", "figcaption", "dialog")
+
+#: A landmark this thin in absolute terms is very unlikely to be a genuine article body — it
+#: reads like a hero/header fragment. Below this size, whether to trust it at all depends on
+#: how much real content sits outside it (see _LANDMARK_FALLBACK_RATIO).
+_LANDMARK_MIN_CHARS = 300
+#: The landmark is distrusted only when the rest of the chrome-free page has at least this many
+#: times more text than the landmark itself — comfortably beyond what a legitimate below-the-fold
+#: widget (related posts, comments) would add next to a real article, so this rarely fires for a
+#: page where <main> genuinely is "the content".
+_LANDMARK_FALLBACK_RATIO = 3
 
 #: Inline styles that hide an element outright (including 1px visually clipped sr-only/SEO fallbacks).
 _HIDDEN_STYLE_RE = re.compile(
@@ -447,18 +466,31 @@ def _measure_text(soup: BeautifulSoup) -> dict[str, Any]:
     visible_text = _normalise_whitespace(visible_soup.get_text(" ", strip=True))
 
     # 3. main content: prefer <main>/<article>, else visible minus chrome.
+    chrome_free_soup = BeautifulSoup(str(visible_soup), "lxml")
+    for tag in chrome_free_soup(_CHROME_TAGS):
+        tag.decompose()
+    chrome_free_text = _normalise_whitespace(chrome_free_soup.get_text(" ", strip=True))
+
     scope = "body"
-    main_soup = BeautifulSoup(str(visible_soup), "lxml")
-    container = main_soup.find("main") or main_soup.find("article")
+    main_text = chrome_free_text
+    landmark_soup = BeautifulSoup(str(visible_soup), "lxml")
+    container = landmark_soup.find("main") or landmark_soup.find("article")
     if container is not None:
-        scope = container.name
         for tag in container(_CHROME_TAGS):
             tag.decompose()
-        main_text = _normalise_whitespace(container.get_text(" ", strip=True))
-    else:
-        for tag in main_soup(_CHROME_TAGS):
-            tag.decompose()
-        main_text = _normalise_whitespace(main_soup.get_text(" ", strip=True))
+        landmark_text = _normalise_whitespace(container.get_text(" ", strip=True))
+
+        # Trust the landmark unless it is both thin in absolute terms and dwarfed by real content
+        # sitting outside it — the "hero wrapped in <main>, article body in sibling <section>s"
+        # shape. A landmark that is merely smaller than the rest of the page (a real article next
+        # to a big related-posts widget) is still the right scope and must not fall back.
+        landmark_is_a_fragment = (
+            len(landmark_text) < _LANDMARK_MIN_CHARS
+            and len(chrome_free_text) >= _LANDMARK_FALLBACK_RATIO * max(len(landmark_text), 1)
+        )
+        if not landmark_is_a_fragment:
+            scope = container.name
+            main_text = landmark_text
 
     return {
         "raw_text": raw_text,
@@ -728,7 +760,12 @@ def extract_page(
 
     for anchor in soup.find_all("a", href=True):
         raw_href = (anchor.get("href") or "").strip()
-        target = absolute_url(url, raw_href)
+        # strip_tracking=False: this is a report of what links the page actually contains, not a
+        # crawl-frontier lookup. Collapsing "/post?utm_source=cta" and "/post" to one entry here
+        # would undercount real, distinct anchors against any tool that doesn't apply the same
+        # tracking-parameter normalisation. The frontier re-normalises separately (see
+        # orchestrator._enqueue) so crawl scope and dedup are unaffected by this choice.
+        target = absolute_url(url, raw_href, strip_tracking=False)
         if not target:
             # mailto:, tel:, javascript:, #fragment, empty, or malformed — never a crawl target.
             non_http += 1

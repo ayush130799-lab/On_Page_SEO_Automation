@@ -154,6 +154,14 @@ class Page(TimestampMixin, Base):
     priority_band: Mapped[str | None] = mapped_column(String(10), index=True)
     priority_rank: Mapped[int | None] = mapped_column(Integer)
 
+    #: 0-100. How much additional relevant organic traffic this page could capture — search
+    #: demand, ranking/CTR headroom, keyword relevance and page quality. See
+    #: services/opportunity_scoring.py for the composition; recomputed alongside intent analysis.
+    traffic_potential_score: Mapped[float | None] = mapped_column(Float)
+    #: 0-100. This page's potential to generate leads/business: traffic potential blended with
+    #: commercial intent, historical conversion rate and engagement.
+    lead_potential_score: Mapped[float | None] = mapped_column(Float)
+
     ai_status: Mapped[str] = mapped_column(
         String(30), default=AIStatus.PENDING, nullable=False, index=True
     )

@@ -49,6 +49,45 @@ def _bootstrap_admin() -> None:
         db.close()
 
 
+def _cleanup_stale_crawl_runs() -> None:
+    """Mark any QUEUED or RUNNING crawl runs as FAILED on startup.
+
+    A background task or worker that was executing during a previous server process
+    is now gone — its run will never advance. Clearing these orphaned rows unblocks
+    the website so the next crawl can start immediately.
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from .db import SessionLocal
+    from .models import CrawlRun, RunStatus
+
+    db = SessionLocal()
+    try:
+        stale = db.scalars(
+            select(CrawlRun).where(
+                CrawlRun.status.in_([RunStatus.QUEUED, RunStatus.RUNNING])
+            )
+        ).all()
+        if stale:
+            now = datetime.now(timezone.utc)
+            for run in stale:
+                run.status = RunStatus.FAILED
+                run.stage = "failed"
+                run.error = "Crawl interrupted: server restarted while this run was active."
+                run.completed_at = now
+            db.commit()
+            logger.info(
+                "Startup cleanup: marked %d orphaned crawl run(s) as failed.", len(stale)
+            )
+    except Exception as exc:
+        logger.warning("Could not clean up stale crawl runs on startup: %s", exc)
+        db.rollback()
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     if settings.is_production and settings.secret_key.startswith("dev-only"):
@@ -80,6 +119,9 @@ async def lifespan(_: FastAPI):
         init_db()
     except Exception as exc:
         logger.warning("Database initialisation warning (%s).", exc)
+    # Clean up any crawl runs left in QUEUED/RUNNING state by the previous process.
+    # These will never progress, and leaving them blocks the website from starting new crawls.
+    _cleanup_stale_crawl_runs()
     _bootstrap_admin()
     yield
 
@@ -101,6 +143,7 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["Content-Disposition"],
     )
 
     register_exception_handlers(app)
@@ -112,6 +155,7 @@ def create_app() -> FastAPI:
         dashboard,
         debug,
         experiments,
+        export,
         integrations,
         jobs,
         pages,
@@ -138,6 +182,7 @@ def create_app() -> FastAPI:
     app.include_router(jobs.router)
     app.include_router(debug.router)
     app.include_router(validate.router)
+    app.include_router(export.router)
 
     @app.get("/", tags=["system"])
     def root() -> dict[str, str]:
