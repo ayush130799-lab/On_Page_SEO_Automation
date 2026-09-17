@@ -115,6 +115,9 @@ def list_pages(
     max_seo_score: float | None = Query(None, ge=0, le=100),
     min_priority_score: float | None = Query(None, ge=0, le=100),
     has_issues: bool | None = None,
+    rule_id: str | None = Query(
+        None, description="Restrict to pages with this unresolved SEOIssue rule_id."
+    ),
     include_inactive: bool = False,
     window_days: int | None = Query(None, ge=1, le=365),
 ):
@@ -156,6 +159,14 @@ def list_pages(
         stmt = stmt.where(Page.priority_score >= min_priority_score)
     if has_issues is not None:
         stmt = stmt.where(Page.issue_count > 0 if has_issues else Page.issue_count == 0)
+    if rule_id:
+        # A rule fires at most once per page (see services/seo/registry.py's evaluate()), so this
+        # matches exactly the "N pages" count the dashboard's "Most common issues" card shows for
+        # the same rule_id — same is_resolved/is_active filters as that aggregate.
+        affected_page_ids = select(SEOIssue.page_id).where(
+            SEOIssue.rule_id == rule_id, SEOIssue.is_resolved.is_(False)
+        )
+        stmt = stmt.where(Page.id.in_(affected_page_ids))
 
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
 

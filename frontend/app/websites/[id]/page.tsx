@@ -3,27 +3,24 @@
 /**
  * Website overview and the priority pages table.
  *
- * The table is the product's centrepiece: SEO score and priority score sit side by side with the
- * traffic, search and conversion numbers that justify the ranking, and every column can be sorted
- * and filtered server-side.
+ * The table itself (SEO score and priority score side by side with the traffic, search and
+ * conversion numbers that justify the ranking, every column sortable/filterable server-side)
+ * lives in ``PriorityPagesTable`` so the same table/design is reused by the "Most common issues"
+ * → affected-pages drilldown at ``/websites/[id]/issues/[ruleId]``.
  */
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { AuthGate } from "@/components/AuthGate";
+import { PriorityPagesTable } from "@/components/PriorityPagesTable";
 import {
-  AiBadge,
-  BandBadge,
   Card,
   DistributionBar,
-  EmptyState,
   ErrorNote,
-  IntentBadge,
   PageHeader,
   ProgressBar,
-  ScoreBadge,
   SeverityBadge,
   Spinner,
   Stat,
@@ -32,47 +29,12 @@ import {
 import { ApiError, api, saveBlob } from "@/lib/api";
 import {
   PROVIDER_LABELS,
-  displayPath,
   formatCurrency,
   formatNumber,
   formatPercent,
   formatRelative,
-  truncate,
 } from "@/lib/format";
-import type { CrawlRun, PageListItem, WebsiteOverview } from "@/lib/types";
-
-const PAGE_SIZE = 50;
-
-type SortKey =
-  | "priority_score"
-  | "seo_score"
-  | "traffic_potential_score"
-  | "lead_potential_score"
-  | "issue_count"
-  | "users"
-  | "clicks"
-  | "impressions"
-  | "conversions"
-  | "severity"
-  | "url";
-
-interface Filters {
-  search: string;
-  severity: string;
-  priority_band: string;
-  seo_category: string;
-  ai_status: string;
-  has_issues: string;
-}
-
-const EMPTY_FILTERS: Filters = {
-  search: "",
-  severity: "",
-  priority_band: "",
-  seo_category: "",
-  ai_status: "",
-  has_issues: "",
-};
+import type { CrawlRun, WebsiteOverview } from "@/lib/types";
 
 export default function WebsitePage() {
   return (
@@ -87,16 +49,11 @@ function WebsiteDashboard() {
   const websiteId = Number(params.id);
 
   const [overview, setOverview] = useState<WebsiteOverview | null>(null);
-  const [pages, setPages] = useState<PageListItem[]>([]);
-  const [total, setTotal] = useState(0);
-  const [offset, setOffset] = useState(0);
-  const [sort, setSort] = useState<SortKey>("priority_score");
-  const [order, setOrder] = useState<"asc" | "desc">("desc");
-  const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
-  const [searchInput, setSearchInput] = useState("");
+  // Bumped to force PriorityPagesTable to refetch after an action changes the underlying data
+  // (a crawl finishing, a rescore, etc.) — the table owns its own paging/sorting/filter state.
+  const [pagesReloadToken, setPagesReloadToken] = useState(0);
 
   const [loadingOverview, setLoadingOverview] = useState(true);
-  const [loadingPages, setLoadingPages] = useState(true);
   const [error, setError] = useState("");
   const [action, setAction] = useState("");
   const [activeCrawl, setActiveCrawl] = useState<CrawlRun | null>(null);
@@ -120,46 +77,11 @@ function WebsiteDashboard() {
     }
   }, [websiteId]);
 
-  const loadPages = useCallback(async () => {
-    setLoadingPages(true);
-    try {
-      const result = await api.pages.list(websiteId, {
-        limit: PAGE_SIZE,
-        offset,
-        sort,
-        order,
-        ...Object.fromEntries(
-          Object.entries(filters).filter(([, value]) => value !== ""),
-        ),
-      });
-      setPages(result.items);
-      setTotal(result.total);
-      setError("");
-    } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "Could not load pages.");
-    } finally {
-      setLoadingPages(false);
-    }
-  }, [websiteId, offset, sort, order, filters]);
-
   useEffect(() => {
     void loadOverview();
   }, [loadOverview]);
 
-  useEffect(() => {
-    void loadPages();
-  }, [loadPages]);
-
-  // Debounce the search box so typing does not fire a request per keystroke.
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setFilters((current) => ({ ...current, search: searchInput }));
-      setOffset(0);
-    }, 350);
-    return () => clearTimeout(timer);
-  }, [searchInput]);
-
-  // Follow a running crawl and refresh the table when it finishes.
+  // Follow a running crawl and refresh the overview + pages table when it finishes.
   useEffect(() => {
     if (!activeCrawl) return;
     const crawlId = activeCrawl.id;
@@ -172,7 +94,7 @@ function WebsiteDashboard() {
           setActiveCrawl(null);
           if (run.status === "completed") {
             void loadOverview();
-            void loadPages();
+            setPagesReloadToken((token) => token + 1);
           } else if (run.status === "failed") {
             setError(run.error || "Crawl did not complete successfully.");
             void loadOverview();
@@ -183,17 +105,7 @@ function WebsiteDashboard() {
       }
     }, 2500);
     return () => clearInterval(timer);
-  }, [activeCrawl?.id, loadOverview, loadPages]);
-
-  const toggleSort = (key: SortKey) => {
-    if (sort === key) {
-      setOrder(order === "desc" ? "asc" : "desc");
-    } else {
-      setSort(key);
-      setOrder("desc");
-    }
-    setOffset(0);
-  };
+  }, [activeCrawl?.id, loadOverview]);
 
   const runAction = async (label: string, fn: () => Promise<unknown>) => {
     setAction(label);
@@ -201,7 +113,7 @@ function WebsiteDashboard() {
     try {
       await fn();
       await loadOverview();
-      await loadPages();
+      setPagesReloadToken((token) => token + 1);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : `${label} failed.`);
     } finally {
@@ -230,11 +142,6 @@ function WebsiteDashboard() {
       setExporting(false);
     }
   };
-
-  const activeFilterCount = useMemo(
-    () => Object.values(filters).filter((value) => value !== "").length,
-    [filters],
-  );
 
   if (loadingOverview && !overview) {
     return (
@@ -476,16 +383,25 @@ function WebsiteDashboard() {
           {top_issues.length === 0 ? (
             <p className="text-sm text-slate-500">No outstanding issues.</p>
           ) : (
-            <ul className="space-y-2">
+            <ul className="space-y-1">
               {top_issues.slice(0, 6).map((issue) => (
-                <li key={issue.rule_id} className="flex items-center justify-between gap-3">
-                  <span className="flex min-w-0 items-center gap-2">
-                    <SeverityBadge severity={issue.severity} />
-                    <span className="truncate text-sm text-slate-300">{issue.title}</span>
-                  </span>
-                  <span className="tnum shrink-0 text-sm text-slate-400">
-                    {formatNumber(issue.page_count)} pages
-                  </span>
+                <li key={issue.rule_id}>
+                  <Link
+                    href={{
+                      pathname: `/websites/${websiteId}/issues/${encodeURIComponent(issue.rule_id)}`,
+                      query: { title: issue.title, severity: issue.severity },
+                    }}
+                    className="flex items-center justify-between gap-3 rounded-md px-2 py-1.5 -mx-2 transition-colors hover:bg-slate-800/60"
+                    title={`View all ${issue.page_count} pages affected by "${issue.title}"`}
+                  >
+                    <span className="flex min-w-0 items-center gap-2">
+                      <SeverityBadge severity={issue.severity} />
+                      <span className="truncate text-sm text-slate-300">{issue.title}</span>
+                    </span>
+                    <span className="tnum shrink-0 text-sm text-sky-400">
+                      {formatNumber(issue.page_count)} pages
+                    </span>
+                  </Link>
                 </li>
               ))}
             </ul>
@@ -526,381 +442,11 @@ function WebsiteDashboard() {
         </Card>
       </div>
 
-      <Card
-        title="Priority pages"
-        action={
-          <div className="flex items-center gap-2">
-            {activeFilterCount > 0 && (
-              <button
-                type="button"
-                onClick={() => {
-                  setFilters(EMPTY_FILTERS);
-                  setSearchInput("");
-                  setOffset(0);
-                }}
-                className="text-xs text-sky-400 hover:underline"
-              >
-                Clear {activeFilterCount} filter{activeFilterCount === 1 ? "" : "s"}
-              </button>
-            )}
-            <span className="text-xs text-slate-500">{formatNumber(total)} pages</span>
-          </div>
-        }
-      >
-        <div className="mb-4 flex flex-wrap gap-2">
-          <input
-            className="input max-w-xs"
-            placeholder="Search URL or title…"
-            value={searchInput}
-            onChange={(event) => setSearchInput(event.target.value)}
-          />
-          <FilterSelect
-            value={filters.priority_band}
-            onChange={(value) => {
-              setFilters({ ...filters, priority_band: value });
-              setOffset(0);
-            }}
-            label="All priorities"
-            options={[
-              ["P0", "P0 — critical"],
-              ["P1", "P1 — high"],
-              ["P2", "P2 — medium"],
-              ["P3", "P3 — low"],
-            ]}
-          />
-          <FilterSelect
-            value={filters.severity}
-            onChange={(value) => {
-              setFilters({ ...filters, severity: value });
-              setOffset(0);
-            }}
-            label="All severities"
-            options={[
-              ["CRITICAL", "Critical"],
-              ["HIGH", "High"],
-              ["MEDIUM", "Medium"],
-              ["LOW", "Low"],
-              ["NONE", "None"],
-            ]}
-          />
-          <FilterSelect
-            value={filters.seo_category}
-            onChange={(value) => {
-              setFilters({ ...filters, seo_category: value });
-              setOffset(0);
-            }}
-            label="All SEO health"
-            options={[
-              ["HIGH ISSUES", "Poor (<75)"],
-              ["MEDIUM ISSUES", "Needs work (75–90)"],
-              ["LOW ISSUES", "Healthy (>90)"],
-            ]}
-          />
-          <FilterSelect
-            value={filters.ai_status}
-            onChange={(value) => {
-              setFilters({ ...filters, ai_status: value });
-              setOffset(0);
-            }}
-            label="All AI states"
-            options={[
-              ["completed", "Analysed"],
-              ["cached", "Cached"],
-              ["skipped", "Skipped"],
-              ["pending", "Pending"],
-              ["failed", "Failed"],
-            ]}
-          />
-          <FilterSelect
-            value={filters.has_issues}
-            onChange={(value) => {
-              setFilters({ ...filters, has_issues: value });
-              setOffset(0);
-            }}
-            label="With and without issues"
-            options={[
-              ["true", "Has issues"],
-              ["false", "No issues"],
-            ]}
-          />
-        </div>
-
-        {loadingPages && pages.length === 0 ? (
-          <div className="py-10">
-            <Spinner label="Loading pages…" />
-          </div>
-        ) : pages.length === 0 ? (
-          <EmptyState
-            title="No pages match"
-            description={
-              total === 0 && activeFilterCount === 0
-                ? "Run a crawl to discover and audit this website's pages."
-                : "Try relaxing the filters."
-            }
-            action={
-              total === 0 && activeFilterCount === 0 ? (
-                <button type="button" onClick={() => void startCrawl()} className="btn-primary">
-                  Crawl now
-                </button>
-              ) : undefined
-            }
-          />
-        ) : (
-          <>
-            <div className="table-wrap -mx-4">
-              <table className="data compact">
-                <thead>
-                  <tr>
-                    <SortHeader
-                      label="URL"
-                      column="url"
-                      sort={sort}
-                      order={order}
-                      onSort={toggleSort}
-                      className="pl-4"
-                    />
-                    <SortHeader
-                      label="Priority"
-                      column="priority_score"
-                      sort={sort}
-                      order={order}
-                      onSort={toggleSort}
-                      align="right"
-                    />
-                    <SortHeader
-                      label="SEO"
-                      column="seo_score"
-                      sort={sort}
-                      order={order}
-                      onSort={toggleSort}
-                      align="right"
-                    />
-                    <SortHeader
-                      label="Traffic"
-                      column="traffic_potential_score"
-                      sort={sort}
-                      order={order}
-                      onSort={toggleSort}
-                      align="right"
-                    />
-                    <SortHeader
-                      label="Leads"
-                      column="lead_potential_score"
-                      sort={sort}
-                      order={order}
-                      onSort={toggleSort}
-                      align="right"
-                    />
-                    <SortHeader
-                      label="Severity"
-                      column="severity"
-                      sort={sort}
-                      order={order}
-                      onSort={toggleSort}
-                    />
-                    <SortHeader
-                      label="Users"
-                      column="users"
-                      sort={sort}
-                      order={order}
-                      onSort={toggleSort}
-                      align="right"
-                    />
-                    <SortHeader
-                      label="Clicks"
-                      column="clicks"
-                      sort={sort}
-                      order={order}
-                      onSort={toggleSort}
-                      align="right"
-                    />
-                    <SortHeader
-                      label="Impr."
-                      column="impressions"
-                      sort={sort}
-                      order={order}
-                      onSort={toggleSort}
-                      align="right"
-                    />
-                    <th className="text-right">CTR</th>
-                    <SortHeader
-                      label="Conv."
-                      column="conversions"
-                      sort={sort}
-                      order={order}
-                      onSort={toggleSort}
-                      align="right"
-                    />
-                    <SortHeader
-                      label="Issues"
-                      column="issue_count"
-                      sort={sort}
-                      order={order}
-                      onSort={toggleSort}
-                      align="right"
-                    />
-                    <th className="max-w-[150px]">Major issues</th>
-                    <th className="whitespace-nowrap">Intent</th>
-                    <th className="min-w-[85px] whitespace-nowrap pr-4">AI</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pages.map((page) => (
-                    <tr key={page.id}>
-                      <td className="max-w-[160px] pl-4">
-                        <Link
-                          href={`/pages/${page.id}`}
-                          className="block truncate font-medium text-slate-200 hover:text-sky-400"
-                          title={page.url}
-                        >
-                          {displayPath(page.url)}
-                        </Link>
-                        <div className="truncate text-xs text-slate-500" title={page.title ?? ""}>
-                          {truncate(page.title, 55)}
-                        </div>
-                      </td>
-                      <td className="text-right">
-                        <div className="flex items-center justify-end gap-1.5">
-                          <span className="tnum text-sm font-semibold text-slate-100">
-                            {page.priority_score?.toFixed(1) ?? "—"}
-                          </span>
-                          <BandBadge band={page.priority_band} />
-                        </div>
-                      </td>
-                      <td className="text-right">
-                        <ScoreBadge score={page.seo_score} />
-                      </td>
-                      <td className="text-right">
-                        <ScoreBadge score={page.traffic_potential_score} />
-                      </td>
-                      <td className="text-right">
-                        <ScoreBadge score={page.lead_potential_score} />
-                      </td>
-                      <td>
-                        <SeverityBadge severity={page.highest_severity} />
-                      </td>
-                      <td className="tnum text-right">{formatNumber(page.users)}</td>
-                      <td className="tnum text-right">{formatNumber(page.clicks)}</td>
-                      <td className="tnum text-right">{formatNumber(page.impressions)}</td>
-                      <td className="tnum text-right">
-                        {page.ctr !== null ? formatPercent(page.ctr, 2) : "—"}
-                      </td>
-                      <td className="tnum text-right">{formatNumber(page.conversions)}</td>
-                      <td className="tnum text-right">{page.issue_count}</td>
-                      <td className="max-w-[150px]">
-                        <span className="line-clamp-2 text-xs text-slate-400" title={page.top_issues.join(" · ")}>
-                          {page.top_issues.length > 0 ? page.top_issues.join(" · ") : "—"}
-                        </span>
-                      </td>
-                      <td className="whitespace-nowrap">
-                        <div className="flex items-center gap-1">
-                          <IntentBadge intent={page.search_intent} />
-                          {page.intent_mismatch && (
-                            <span title="Intent mismatch detected" className="text-amber-400 text-xs">
-                              ⚠
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="min-w-[85px] whitespace-nowrap pr-4">
-                        <AiBadge status={page.ai_status} />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="mt-4 flex items-center justify-between text-sm text-slate-400">
-              <span className="tnum">
-                {offset + 1}–{Math.min(offset + PAGE_SIZE, total)} of {formatNumber(total)}
-              </span>
-              <span className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-                  disabled={offset === 0}
-                  className="btn-secondary"
-                >
-                  Previous
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setOffset(offset + PAGE_SIZE)}
-                  disabled={offset + PAGE_SIZE >= total}
-                  className="btn-secondary"
-                >
-                  Next
-                </button>
-              </span>
-            </div>
-          </>
-        )}
-      </Card>
+      <PriorityPagesTable
+        websiteId={websiteId}
+        reloadToken={pagesReloadToken}
+        onStartCrawl={() => void startCrawl()}
+      />
     </>
-  );
-}
-
-function FilterSelect({
-  value,
-  onChange,
-  label,
-  options,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  label: string;
-  options: [string, string][];
-}) {
-  return (
-    <select
-      className="input max-w-[13rem]"
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
-      aria-label={label}
-    >
-      <option value="">{label}</option>
-      {options.map(([optionValue, optionLabel]) => (
-        <option key={optionValue} value={optionValue}>
-          {optionLabel}
-        </option>
-      ))}
-    </select>
-  );
-}
-
-function SortHeader({
-  label,
-  column,
-  sort,
-  order,
-  onSort,
-  align = "left",
-  className = "",
-}: {
-  label: string;
-  column: SortKey;
-  sort: SortKey;
-  order: "asc" | "desc";
-  onSort: (key: SortKey) => void;
-  align?: "left" | "right";
-  className?: string;
-}) {
-  const active = sort === column;
-  return (
-    <th className={`${align === "right" ? "text-right" : ""} ${className}`}>
-      <button
-        type="button"
-        onClick={() => onSort(column)}
-        className={`sortable inline-flex items-center gap-1 uppercase ${
-          active ? "text-sky-400" : ""
-        }`}
-      >
-        {label}
-        <span aria-hidden className="text-[10px]">
-          {active ? (order === "desc" ? "▼" : "▲") : "↕"}
-        </span>
-      </button>
-    </th>
   );
 }
