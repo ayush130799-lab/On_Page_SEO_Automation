@@ -12,6 +12,7 @@ documented on each ``_build_*_sheet`` function.
 from __future__ import annotations
 
 import io
+import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Sequence
@@ -427,6 +428,85 @@ def _build_keywords_sheet(
 class ExcelReport:
     content: bytes
     filename: str
+
+
+#: Same label vocabulary as the frontend's ``AiBadge``/``IntentBadge`` components, so the export
+#: reads exactly like the dashboard cell rather than a raw internal status string.
+_AI_STATUS_LABELS = {
+    "completed": "Analysed", "cached": "Cached", "skipped": "Skipped",
+    "failed": "Failed", "queued": "Queued", "pending": "Pending",
+}
+_INTENT_LABELS = {
+    "informational": "Informational", "navigational": "Navigational", "commercial": "Commercial",
+    "transactional": "Transactional", "local": "Local",
+}
+
+
+def _slugify_issue_title(title: str) -> str:
+    """"Meta description" -> "Meta-Description" (for the "SEO-Issue-<slug>.xlsx" filename)."""
+    words = re.findall(r"[A-Za-z0-9]+", title)
+    return "-".join(word.capitalize() for word in words) or "Issue"
+
+
+def generate_issue_pages_excel(
+    *,
+    issue_title: str,
+    pages: list[Page],
+    metrics: dict[int, dict[str, Any]],
+    top_issues: dict[int, list[str]],
+    intent_map: dict[int, dict[str, Any]],
+) -> ExcelReport:
+    """One-sheet export of an issue-detail page's "Affected pages" table.
+
+    Every value is exactly what that table already shows (same ``Page`` rows, same
+    ``aggregate_page_metrics``/``_top_issues_for``/``_intent_for`` outputs the route computed for
+    the page) — nothing recalculated, and nothing from an individual page's own detail view
+    (no findings, recommendations, meta/H1/canonical/keyword detail).
+    """
+    headers = [
+        "URL", "Priority", "SEO", "Traffic", "Leads", "Severity", "Users", "Clicks",
+        "Impressions", "CTR", "Conversions", "Issues", "Major Issues", "Intent", "AI",
+    ]
+    widths = [55, 10, 9, 10, 9, 11, 10, 10, 12, 9, 12, 9, 45, 16, 12]
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Affected Pages"
+    _set_header(ws, headers, widths)
+
+    for row_index, page in enumerate(pages, start=2):
+        m = metrics.get(page.id, {})
+        intent = (intent_map.get(page.id) or {}).get("intent")
+        values = [
+            page.url,
+            page.priority_score,
+            page.seo_score,
+            page.traffic_potential_score,
+            page.lead_potential_score,
+            page.highest_severity,
+            m.get("users", 0),
+            m.get("clicks", 0),
+            m.get("impressions", 0),
+            _fmt_pct(m.get("ctr"), 2),
+            m.get("conversions", 0.0),
+            page.issue_count,
+            " · ".join(top_issues.get(page.id, [])) or "—",
+            _INTENT_LABELS.get(intent, intent) if intent else "—",
+            _AI_STATUS_LABELS.get(page.ai_status, page.ai_status),
+        ]
+        for col, value in enumerate(values, start=1):
+            cell = ws.cell(row=row_index, column=col, value=value)
+            cell.alignment = _WRAP if col == 13 else _TOP
+        fill = _SEVERITY_FILLS.get(page.highest_severity or "")
+        if fill:
+            ws.cell(row=row_index, column=6).fill = fill
+
+    _finish_table(ws, len(headers))
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    filename = f"SEO-Issue-{_slugify_issue_title(issue_title)}.xlsx"
+    return ExcelReport(content=buffer.getvalue(), filename=filename)
 
 
 def generate_seo_excel_report(

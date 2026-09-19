@@ -72,6 +72,10 @@ export interface PriorityPagesTableProps {
   /** Shown as the empty-state action when there are no pages at all and no filters are active.
    *  Omitted (as on the issue drilldown) when starting a crawl doesn't make sense on that view. */
   onStartCrawl?: () => void;
+  /** Called with the current sort/filter query (no pagination) whenever it changes, so a parent
+   *  action outside this table — e.g. the issue drilldown's "Export to Excel" — can request the
+   *  same filtered/sorted set the table is currently showing. */
+  onQueryChange?: (query: Record<string, string | number>) => void;
 }
 
 export function PriorityPagesTable({
@@ -80,6 +84,7 @@ export function PriorityPagesTable({
   title = "Priority pages",
   reloadToken = 0,
   onStartCrawl,
+  onQueryChange,
 }: PriorityPagesTableProps) {
   const [pages, setPages] = useState<PageListItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -123,6 +128,17 @@ export function PriorityPagesTable({
     void loadPages();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadPages, reloadToken]);
+
+  // Let a parent action (e.g. an "Export to Excel" button outside this table) know the current
+  // sort/filters — no pagination — so it can request the same set the table is showing.
+  useEffect(() => {
+    onQueryChange?.({
+      sort,
+      order,
+      ...Object.fromEntries(Object.entries(filters).filter(([, value]) => value !== "")),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sort, order, filters]);
 
   // Debounce the search box so typing does not fire a request per keystroke.
   useEffect(() => {

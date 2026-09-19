@@ -5,13 +5,14 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy import Float, and_, case, func, or_, select
 from sqlalchemy.orm import Session
 
 from ...config import settings
 from ...core.deps import CurrentUser, DbSession, ReadableWebsite, get_website_for_read
 from ...core.errors import NotFoundError
+from ...core.ratelimit import default_rate_limit
 from ...models import (
     AIRecommendation,
     GA4Metric,
@@ -97,6 +98,101 @@ def _metric_subquery(db: Session, website_id: int, window_days: int):
     return ga4, gsc
 
 
+def _apply_page_filters(
+    stmt,
+    *,
+    include_inactive: bool,
+    search: str | None,
+    seo_category: str | None,
+    severity: str | None,
+    priority_band: str | None,
+    ai_status: str | None,
+    status_code: int | None,
+    min_seo_score: float | None,
+    max_seo_score: float | None,
+    min_priority_score: float | None,
+    has_issues: bool | None,
+    rule_id: str | None,
+):
+    """The priority table's filter set — shared by ``list_pages`` and the issue-export endpoint
+    so the two can never drift apart on what "matches the current filters" means."""
+    if not include_inactive:
+        stmt = stmt.where(Page.is_active.is_(True))
+    if search:
+        pattern = f"%{search.strip()}%"
+        stmt = stmt.where(or_(Page.url.ilike(pattern), Page.title.ilike(pattern)))
+    if seo_category:
+        stmt = stmt.where(Page.seo_category == seo_category.upper())
+    if severity:
+        stmt = stmt.where(Page.highest_severity == severity.upper())
+    if priority_band:
+        stmt = stmt.where(Page.priority_band == priority_band.upper())
+    if ai_status:
+        stmt = stmt.where(Page.ai_status == ai_status.lower())
+    if status_code is not None:
+        stmt = stmt.where(Page.status_code == status_code)
+    if min_seo_score is not None:
+        stmt = stmt.where(Page.seo_score >= min_seo_score)
+    if max_seo_score is not None:
+        stmt = stmt.where(Page.seo_score <= max_seo_score)
+    if min_priority_score is not None:
+        stmt = stmt.where(Page.priority_score >= min_priority_score)
+    if has_issues is not None:
+        stmt = stmt.where(Page.issue_count > 0 if has_issues else Page.issue_count == 0)
+    if rule_id:
+        # A rule fires at most once per page (see services/seo/registry.py's evaluate()), so this
+        # matches exactly the "N pages" count the dashboard's "Most common issues" card shows for
+        # the same rule_id — same is_resolved/is_active filters as that aggregate.
+        affected_page_ids = select(SEOIssue.page_id).where(
+            SEOIssue.rule_id == rule_id, SEOIssue.is_resolved.is_(False)
+        )
+        stmt = stmt.where(Page.id.in_(affected_page_ids))
+    return stmt
+
+
+def _apply_page_sort(stmt, db: Session, website_id: int, window: int, sort: str, order: str):
+    """Same sort logic ``list_pages`` always used — factored out so the (unpaginated) issue
+    export can return rows in the same order the table shows them, without duplicating this."""
+    descending = order == "desc"
+    if sort in METRIC_SORTS:
+        ga4, gsc = _metric_subquery(db, website_id, window)
+        stmt = stmt.outerjoin(ga4, ga4.c.page_id == Page.id).outerjoin(
+            gsc, gsc.c.page_id == Page.id
+        )
+        column = {
+            "users": func.coalesce(ga4.c.users, 0),
+            "sessions": func.coalesce(ga4.c.sessions, 0),
+            "conversions": func.coalesce(ga4.c.conversions, 0.0),
+            "revenue": func.coalesce(ga4.c.revenue, 0.0),
+            "clicks": func.coalesce(gsc.c.clicks, 0),
+            "impressions": func.coalesce(gsc.c.impressions, 0),
+        }[sort]
+        return stmt.order_by(column.desc() if descending else column.asc(), Page.id.asc())
+    if sort == "severity":
+        return stmt.order_by(
+            SEVERITY_ORDER.asc() if descending else SEVERITY_ORDER.desc(), Page.id.asc()
+        )
+
+    ga4, gsc = _metric_subquery(db, website_id, window)
+    stmt = stmt.outerjoin(ga4, ga4.c.page_id == Page.id).outerjoin(gsc, gsc.c.page_id == Page.id)
+    column = SORTABLE.get(sort, Page.priority_score)
+    ordering = column.desc().nullslast() if descending else column.asc().nullsfirst()
+    clicks_col = func.coalesce(gsc.c.clicks, 0)
+    impr_col = func.coalesce(gsc.c.impressions, 0)
+    users_col = func.coalesce(ga4.c.users, 0)
+    conv_col = func.coalesce(ga4.c.conversions, 0.0)
+    # Priority is headline number; break ties with real engagement (clicks, impressions, users, conversions), then technical urgency.
+    return stmt.order_by(
+        ordering,
+        clicks_col.desc() if descending else clicks_col.asc(),
+        impr_col.desc() if descending else impr_col.asc(),
+        users_col.desc() if descending else users_col.asc(),
+        conv_col.desc() if descending else conv_col.asc(),
+        SEVERITY_ORDER.asc(),
+        Page.seo_score.asc().nullsfirst(),
+    )
+
+
 @router.get("/websites/{website_id}/pages", response_model=PageEnvelope[PageListItem])
 def list_pages(
     website: ReadableWebsite,
@@ -136,80 +232,24 @@ def list_pages(
         db.rollback()
 
     stmt = select(Page).where(Page.website_id == website.id)
-    if not include_inactive:
-        stmt = stmt.where(Page.is_active.is_(True))
-    if search:
-        pattern = f"%{search.strip()}%"
-        stmt = stmt.where(or_(Page.url.ilike(pattern), Page.title.ilike(pattern)))
-    if seo_category:
-        stmt = stmt.where(Page.seo_category == seo_category.upper())
-    if severity:
-        stmt = stmt.where(Page.highest_severity == severity.upper())
-    if priority_band:
-        stmt = stmt.where(Page.priority_band == priority_band.upper())
-    if ai_status:
-        stmt = stmt.where(Page.ai_status == ai_status.lower())
-    if status_code is not None:
-        stmt = stmt.where(Page.status_code == status_code)
-    if min_seo_score is not None:
-        stmt = stmt.where(Page.seo_score >= min_seo_score)
-    if max_seo_score is not None:
-        stmt = stmt.where(Page.seo_score <= max_seo_score)
-    if min_priority_score is not None:
-        stmt = stmt.where(Page.priority_score >= min_priority_score)
-    if has_issues is not None:
-        stmt = stmt.where(Page.issue_count > 0 if has_issues else Page.issue_count == 0)
-    if rule_id:
-        # A rule fires at most once per page (see services/seo/registry.py's evaluate()), so this
-        # matches exactly the "N pages" count the dashboard's "Most common issues" card shows for
-        # the same rule_id — same is_resolved/is_active filters as that aggregate.
-        affected_page_ids = select(SEOIssue.page_id).where(
-            SEOIssue.rule_id == rule_id, SEOIssue.is_resolved.is_(False)
-        )
-        stmt = stmt.where(Page.id.in_(affected_page_ids))
+    stmt = _apply_page_filters(
+        stmt,
+        include_inactive=include_inactive,
+        search=search,
+        seo_category=seo_category,
+        severity=severity,
+        priority_band=priority_band,
+        ai_status=ai_status,
+        status_code=status_code,
+        min_seo_score=min_seo_score,
+        max_seo_score=max_seo_score,
+        min_priority_score=min_priority_score,
+        has_issues=has_issues,
+        rule_id=rule_id,
+    )
 
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
-
-    descending = order == "desc"
-    if sort in METRIC_SORTS:
-        ga4, gsc = _metric_subquery(db, website.id, window)
-        stmt = stmt.outerjoin(ga4, ga4.c.page_id == Page.id).outerjoin(
-            gsc, gsc.c.page_id == Page.id
-        )
-        column = {
-            "users": func.coalesce(ga4.c.users, 0),
-            "sessions": func.coalesce(ga4.c.sessions, 0),
-            "conversions": func.coalesce(ga4.c.conversions, 0.0),
-            "revenue": func.coalesce(ga4.c.revenue, 0.0),
-            "clicks": func.coalesce(gsc.c.clicks, 0),
-            "impressions": func.coalesce(gsc.c.impressions, 0),
-        }[sort]
-        stmt = stmt.order_by(column.desc() if descending else column.asc(), Page.id.asc())
-    elif sort == "severity":
-        stmt = stmt.order_by(
-            SEVERITY_ORDER.asc() if descending else SEVERITY_ORDER.desc(), Page.id.asc()
-        )
-    else:
-        ga4, gsc = _metric_subquery(db, website.id, window)
-        stmt = stmt.outerjoin(ga4, ga4.c.page_id == Page.id).outerjoin(
-            gsc, gsc.c.page_id == Page.id
-        )
-        column = SORTABLE.get(sort, Page.priority_score)
-        ordering = column.desc().nullslast() if descending else column.asc().nullsfirst()
-        clicks_col = func.coalesce(gsc.c.clicks, 0)
-        impr_col = func.coalesce(gsc.c.impressions, 0)
-        users_col = func.coalesce(ga4.c.users, 0)
-        conv_col = func.coalesce(ga4.c.conversions, 0.0)
-        # Priority is headline number; break ties with real engagement (clicks, impressions, users, conversions), then technical urgency.
-        stmt = stmt.order_by(
-            ordering,
-            clicks_col.desc() if descending else clicks_col.asc(),
-            impr_col.desc() if descending else impr_col.asc(),
-            users_col.desc() if descending else users_col.asc(),
-            conv_col.desc() if descending else conv_col.asc(),
-            SEVERITY_ORDER.asc(),
-            Page.seo_score.asc().nullsfirst(),
-        )
+    stmt = _apply_page_sort(stmt, db, website.id, window, sort, order)
 
     rows = db.scalars(stmt.limit(limit).offset(offset)).all()
     page_ids = [row.id for row in rows]
@@ -288,6 +328,90 @@ def _intent_for(db: Session, page_ids: list[int]) -> dict[int, dict]:
         logger.warning("_intent_for encountered an error: %s", exc)
         db.rollback()
         return {}
+
+
+@router.post(
+    "/websites/{website_id}/issues/{rule_id}/export/excel",
+    dependencies=[Depends(default_rate_limit)],
+)
+def export_issue_pages_excel(
+    rule_id: str,
+    website: ReadableWebsite,
+    db: DbSession,
+    sort: str = Query("priority_score", description="Column to sort by."),
+    order: str = Query("desc", pattern="^(asc|desc)$"),
+    search: str | None = None,
+    seo_category: str | None = Query(None, description="LOW ISSUES | MEDIUM ISSUES | HIGH ISSUES"),
+    severity: str | None = Query(None, description="CRITICAL | HIGH | MEDIUM | LOW | NONE"),
+    priority_band: str | None = Query(None, description="P0 | P1 | P2 | P3"),
+    ai_status: str | None = None,
+    status_code: int | None = None,
+    min_seo_score: float | None = Query(None, ge=0, le=100),
+    max_seo_score: float | None = Query(None, ge=0, le=100),
+    min_priority_score: float | None = Query(None, ge=0, le=100),
+    has_issues: bool | None = None,
+    window_days: int | None = Query(None, ge=1, le=365),
+    issue_title: str | None = Query(
+        None, description="Display title for the filename; falls back to the stored issue title."
+    ),
+):
+    """Excel export of the issue-detail "Affected pages" table: every URL matching this issue's
+    *current* filters, not only the visible/paginated page — the same rows, columns and values
+    that table shows, nothing from an individual page's own detail view.
+
+    Reuses ``list_pages``'s own filter/sort logic (``_apply_page_filters``/``_apply_page_sort``)
+    and metric/issue/intent lookups, so this can never disagree with what is on screen.
+    """
+    from ...services.excel_export import generate_issue_pages_excel
+
+    window = window_days or settings.priority_metric_window_days
+
+    stmt = select(Page).where(Page.website_id == website.id)
+    stmt = _apply_page_filters(
+        stmt,
+        include_inactive=False,
+        search=search,
+        seo_category=seo_category,
+        severity=severity,
+        priority_band=priority_band,
+        ai_status=ai_status,
+        status_code=status_code,
+        min_seo_score=min_seo_score,
+        max_seo_score=max_seo_score,
+        min_priority_score=min_priority_score,
+        has_issues=has_issues,
+        rule_id=rule_id,
+    )
+    stmt = _apply_page_sort(stmt, db, website.id, window, sort, order)
+
+    pages = db.scalars(stmt).all()
+    page_ids = [page.id for page in pages]
+    metrics = aggregate_page_metrics(db, page_ids, window_days=window)
+    top_issues = _top_issues_for(db, page_ids)
+    intent_map = _intent_for(db, page_ids)
+
+    title = issue_title or db.scalar(
+        select(SEOIssue.title)
+        .join(Page, SEOIssue.page_id == Page.id)
+        .where(
+            SEOIssue.rule_id == rule_id,
+            Page.website_id == website.id,
+            SEOIssue.is_resolved.is_(False),
+        )
+        .limit(1)
+    ) or rule_id.replace("_", " ").replace("-", " ").strip().title()
+
+    report = generate_issue_pages_excel(
+        issue_title=title, pages=pages, metrics=metrics, top_issues=top_issues, intent_map=intent_map,
+    )
+    return Response(
+        content=report.content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{report.filename}"',
+            "Content-Length": str(len(report.content)),
+        },
+    )
 
 
 @router.get("/pages/{page_id}", response_model=PageDetailResponse)

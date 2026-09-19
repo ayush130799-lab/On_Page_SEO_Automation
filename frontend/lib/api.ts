@@ -516,6 +516,28 @@ export const api = {
       ),
   },
 
+  issues: {
+    /** Excel export of one issue's "Affected pages" table — every matching URL (no pagination),
+     *  filtered/sorted the same way the table on screen currently is. */
+    exportExcel: (
+      websiteId: number,
+      ruleId: string,
+      query: Record<string, string | number | undefined> = {},
+    ) => {
+      const params = new URLSearchParams();
+      for (const [key, value] of Object.entries(query)) {
+        if (value !== undefined && value !== "") params.set(key, String(value));
+      }
+      const qs = params.toString();
+      return downloadFile(
+        `/api/websites/${websiteId}/issues/${encodeURIComponent(ruleId)}/export/excel${
+          qs ? `?${qs}` : ""
+        }`,
+        { fallbackFilename: "SEO-Issue-Export.xlsx" },
+      );
+    },
+  },
+
   intent: {
     analyse: (websiteId: number, force = false) =>
       request<{

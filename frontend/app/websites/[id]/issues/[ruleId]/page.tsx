@@ -15,7 +15,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
 import { PriorityPagesTable } from "@/components/PriorityPagesTable";
 import { ErrorNote, PageHeader, SeverityBadge, Spinner } from "@/components/ui";
-import { ApiError, api } from "@/lib/api";
+import { ApiError, api, saveBlob } from "@/lib/api";
 
 export default function IssuePagesRoute() {
   return (
@@ -51,6 +51,12 @@ function IssuePages() {
   const [loadingMeta, setLoadingMeta] = useState(!queryTitle);
   const [metaError, setMetaError] = useState("");
 
+  // Mirrors PriorityPagesTable's current sort/filters (no pagination) so "Export to Excel" can
+  // request the same filtered/sorted set the table is showing, not just the visible page of it.
+  const [tableQuery, setTableQuery] = useState<Record<string, string | number>>({});
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState("");
+
   const loadIssueMeta = useCallback(async () => {
     setLoadingMeta(true);
     try {
@@ -76,6 +82,25 @@ function IssuePages() {
     void loadIssueMeta();
   }, [loadIssueMeta]);
 
+  const exportExcel = async () => {
+    if (exporting) return; // guard against a double-click firing a second download
+    setExporting(true);
+    setExportError("");
+    try {
+      const { blob, filename } = await api.issues.exportExcel(websiteId, ruleId, {
+        ...tableQuery,
+        issue_title: title,
+      });
+      saveBlob(blob, filename);
+    } catch (caught) {
+      setExportError(
+        caught instanceof ApiError ? caught.message : "Could not generate the Excel report.",
+      );
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <>
       <PageHeader
@@ -91,9 +116,20 @@ function IssuePages() {
         }
         subtitle="Every page currently carrying this issue, using the same priority table as the website dashboard."
         actions={
-          <Link href={`/websites/${websiteId}`} className="btn-secondary">
-            ← Back to dashboard
-          </Link>
+          <>
+            <button
+              type="button"
+              onClick={() => void exportExcel()}
+              disabled={exporting}
+              className="btn-secondary"
+              title="Download the affected-pages table below as an .xlsx file"
+            >
+              {exporting ? "Generating Excel…" : "Export to Excel"}
+            </button>
+            <Link href={`/websites/${websiteId}`} className="btn-secondary">
+              ← Back to dashboard
+            </Link>
+          </>
         }
       />
 
@@ -109,7 +145,18 @@ function IssuePages() {
         </div>
       )}
 
-      <PriorityPagesTable websiteId={websiteId} ruleId={ruleId} title="Affected pages" />
+      {exportError && (
+        <div className="mb-4">
+          <ErrorNote error={exportError} onRetry={() => void exportExcel()} />
+        </div>
+      )}
+
+      <PriorityPagesTable
+        websiteId={websiteId}
+        ruleId={ruleId}
+        title="Affected pages"
+        onQueryChange={setTableQuery}
+      />
     </>
   );
 }
