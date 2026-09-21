@@ -136,7 +136,7 @@ class Settings(BaseSettings):
     llm_provider: str = "gemini"  # gemini | groq | anthropic | openai
 
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.0-flash"
+    gemini_model: str = "gemini-2.5-flash-lite"
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
     anthropic_api_key: str = ""
