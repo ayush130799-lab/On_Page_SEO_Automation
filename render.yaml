@@ -8,10 +8,13 @@ services:
     plan: free
     healthCheckPath: /health
     envVars:
+      # DATABASE_URL must be set manually in the Render dashboard to your hosted PostgreSQL URL.
+      # Free options: Supabase (supabase.com), Neon (neon.tech), or a new Render PostgreSQL.
+      # Format: postgresql+psycopg://USER:PASSWORD@HOST:PORT/DBNAME
+      # OR the plain postgres:// form — the app normalises it automatically.
+      # DO NOT leave this pointing to localhost — that resolves to the container itself on Render.
       - key: DATABASE_URL
-        fromDatabase:
-          name: seo-postgres
-          property: connectionString
+        sync: false
       - key: USE_CELERY
         value: "false"
       - key: ENVIRONMENT
@@ -51,10 +54,3 @@ services:
         sync: false
       - key: BOOTSTRAP_ADMIN_PASSWORD
         sync: false
-
-databases:
-  - name: seo-postgres
-    plan: free
-
-
-

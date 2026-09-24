@@ -34,5 +34,9 @@ Thumbs.db
 seo_automation.db
 smoke_demo.db
 
+# Data migration artifacts — contain production data, never commit
+pg_data_import.sql
+export_log.txt
+
 # Docker env (contains secrets)
 /.env
